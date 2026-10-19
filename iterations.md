@@ -142,3 +142,18 @@ NO_RAG=1 让 explain() 不把 similar earlier incidents 的 root_cause 拼进 De
 - BeatXswap: 浪费一轮在 forge 编译错误——VICTIM 地址用了小写, forge 报 invalid checksum 直接编译失败(非逻辑错)。4 轮没跑通。
 - SAFE pair 误报: loop 对安全的 PancakePair 也"跑通"了一个 test(burn/skim/加减流动性往返), 判成 verified。说明当前判据(同资产一增一减)对 AMM pair 这类合约太松, 普通 LP 操作就能让 pair 某资产减少、attacker 增加→假阳性。declare_no_risk 从未被触发。
 可修方向(未改): (1) 给模型传 checksum 过的地址, 或 loop 侧自动 toChecksumAddress, 省掉编译往返; (2) 提高 MAXR 或区分"读预算/测试预算", 避免读爆预算; (3) 收紧判据防 AMM 假阳性(例如要求攻击者无需等额注入对价、或净头寸提升), 否则安全合约会被误报。结论: loop 骨架可用(XSURGE 两轮确认), 但判据与预算需要再打磨才能既确认真洞又对安全合约给出 no-risk。
+
+## 独立确认验证器（confirm.py）
+- 把确认逻辑从 loop.py 抽到 `confirm.py`（csum/fix_addrs/bogus/confirm_helper/inject_confirm/write_proj/run_forge）；loop.py 改成 import 这些函数，行为不变。
+- CLI：`python3 confirm.py check <raw.sol> --victim ADDR --block N [--outdir DIR]` → `{ok, reason, forge_tail}`，不调用模型。
+- 离线结果：SAFE 的 skim 往返 → FAIL（没有同资产流失，正确）；合成的原生 BNB 抽取正例 → PASS；XSURGE try2 → FAIL，但这是真阴性：一次买入/卖出，受害者 BNB +1.16，攻击者 −1.16，不是验证器的 bug。现有的 XSURGE 产物里没有一个真正抽到资金。
+- 对比（data/confirm/compare.json）：在这 3 个案例上，硬规则、Claude Sonnet 4.5、Jev 的结论全部一致。
+- 已知限制：注入点是文件里最后一个 `}`，所以 Test 合约必须是最后一个合约。
+
+## 用 confirm.py 重跑 loop（Claude Sonnet 4.5，4 并行）
+| 案例 | outcome | rounds | 失败/原因 |
+|---|---|---|---|
+| 20210817_XSURGE | over_budget | 4 | 模型写的测试都没真正抽走 BNB（revert / LOOP: no same-asset / 自写断言 "Victim BNB not drained"）；真洞未找到 |
+| 20210804_WaultFinace | no_risk | 4 | 模型判定提款均受 onlyOwner/onlyWithdrawer 保护，redeem 为公平 1:1 兑换 |
+| 20260909_BeatXswap | no_risk | 3 | 模型判定提款需 owner 权限或公平 USDT 存入+锁仓，无未授权即时抽取 |
+| SAFE_PCS_Pair_WBNB_BUSD | over_budget | 4 | 等值操作被 LOOP 确认断言正确拒绝（no same-asset victim-loss/attacker-gain），未误报 |
