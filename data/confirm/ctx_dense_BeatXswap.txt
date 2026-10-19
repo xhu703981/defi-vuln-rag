@@ -1,0 +1,31 @@
+ON-CHAIN CONTEXT at BSC block 120873718 (the fork block), all values read LIVE via `cast` at that block. Addresses + numbers only; mutable values are LIVE - do NOT trust source defaults/constants.
+
+TOKENS:
+- WBNB  0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c  decimals=18  totalSupply=1588759152721201857952327 [1.588e24]
+- USDT  0x55d398326f99059ff775485246999027b3197955  decimals=18  totalSupply=9184991905680809663064697687 [9.184e27]
+- POSITION_MANAGER  0x46a15b0b27311cedf172ab29e4f4766fbe7f4364  decimals=?  totalSupply=5016003 [5.016e6]
+- BTX  0xaa242a47f4cc074e59cbc7d65309b1f21202aaa3  decimals=18  totalSupply=1500000000000000000000000000 [1.5e27]
+
+VICTIM  0x1e647FAADb05f2124BFCcFC003EDc06D1A90bf5D
+  native(BNB) balance = 0
+  holds BTX (0xaa242a47f4cc074e59cbc7d65309b1f21202aaa3) = 1240403093400821911026095 [1.24e24]
+  holds POSITION_MANAGER (0x46a15b0b27311cedf172ab29e4f4766fbe7f4364) = 5
+
+LIVE victim parameters (read on-chain NOW - authoritative; source defaults are stale):
+  TARGET_POOL() = 0xA5Db84d7BCcb799fb31bd3c417D04d5bC29Da96D  <-- address; see roles below
+  minDepositUSDT() = 10000000000000000000000 [1e22]
+  vestingDuration() = 15552000 [1.555e7]
+  TICK_RANGE_WIDTH() = 6000
+  treasuryWallet() = 0xaA2EA785744b123B1e8a1679c8E7aB9B255AAD94  <-- address; see roles below
+  paused() = false
+  owner() = 0x62382d13B909B611c17b54Eb19F8E5BC3d9C1e24  <-- address; see roles below
+
+RELATED CONTRACTS (roles inferred from source constant names; verify live):
+  - TARGET_POOL  0xa5db84d7bccb799fb31bd3c417d04d5bc29da96d  token0=USDT token1=BTX  fee=100  tickSpacing=1  liquidity=862136472450015 [8.621e14]  slot0=423602421969113984775247461607 [4.236e29] | 33530 [3.353e4] | 0 | 1 | 1 | 216272100 [2.162e8] | true  poolBalances[USDT=42369804463953757444512, BTX=4732506272389975827213]
+- treasuryWallet  0xaa2ea785744b123b1e8a1679c8e7ab9b255aad94  native(BNB)=98919209509320000
+
+VICTIM external/public state-changing entry points (names only, from source; decide for yourself which matter): setTreasury, setMinDeposit, setVestingDuration, recoverToken, setPause, fundBTX, deposit, withdraw, claimBatch
+
+BSC generics: WBNB 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, USDT 0x55d398326f99059fF775485246999027B3197955, BUSD 0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56.
+PancakeV2 pair: swap(uint,uint,address,bytes) + callback pancakeCall(address,uint,uint,bytes). PancakeV3 pool: swap(recipient,zeroForOne,amountSpecified,sqrtPriceLimitX96,data) + callback pancakeV3SwapCallback(int256,int256,bytes). MIN_SQRT_RATIO+1=4295128740; MAX_SQRT_RATIO-1=1461446703485210103287273052203988822378723970341.
+REMINDER: in any Foundry test read mutable params live (e.g. victim.minDepositUSDT(), pool.slot0(), balanceOf) instead of hardcoding; fund via deal() in setUp only.
