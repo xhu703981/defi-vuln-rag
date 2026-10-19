@@ -250,3 +250,32 @@ Rerun of the 6 (Claude Sonnet 4.5, new policy): no premature no_risk occurred �
 ### loop.py — policy
 - Removed `declare_no_risk` entirely (tool + handler + budget hints). SYS states there is NO "declare safe" action; the only terminal success is a run_test the loop confirms.
 - `MAXR=4` kept; on forge fail the error tail is fed back and the model keeps writing/fixing until the cap. Non-confirm terminal is now `over_budget`.
+
+## 2026-10-19 — Vectorless RAG for attack paradigms (index.py)
+
+Per t152u: no embeddings. Index all cases → compact structural paradigm sketches → Jev picks which are
+transferable at query time. Fast + cheap.
+
+**`index.py`**
+- `build_catalogue()`: 347 cases → `data/index/catalogue.jsonl`. Each entry: `{id, date, chain, category,
+  loss_short, paradigm, tags}`. `paradigm` = a cheap-LLM (deepseek-v3.2) abstraction of `root_cause` into a
+  <=28-word reusable mechanism (e.g. "spot-price read inside a settlement path, moved by a flash-loaned swap,
+  then an ungated accept() pays at the manipulated price"), tags = 2-5 mechanism keywords. Disk-cached via
+  `llm.gen_model`; rebuild cost ≈ **$0.012** (24 batched calls, 15 cases each).
+- `retrieve_refs(ctx, src, query_id, k, chain)`: Jev scores every OTHER case's paradigm against the current
+  victim surface (dense CONTEXT + fn signatures) with a `noul` question each, batched 40/call (~9 Jev calls,
+  ≈$0.0005/case). Returns top-k `{id, category, paradigm, score, why}`. **Always excludes `query_id`** so a
+  target never sees its own PoC. Chain filter is soft (detector weak: 179 unknown) — falls back to all.
+
+**Safety**: paradigms are writeup/KeyInfo-level abstractions (from `root_cause`, not raw PoC `.sol`), shown
+only as REFERENCES for OTHER cases; the audited case is excluded from its own retrieval. `cases.jsonl`
+untouched (md5 31f88a35e14b2d73b23a99c66e2ca145).
+
+**Smoke** (stored CONTEXT): BeatXswap → access_control paradigms (BRAND, wKeyDAO…); XSURGE → surfaced
+price_manipulation (Jimbo, SellToken02) alongside access_control — the right direction. Jev noul 0.59–0.68.
+
+**Proposed hook (not yet wired)**: in `loop.py::one`, after `ctx = vc.build_context(...)`, add
+`refs = index.retrieve_refs(ctx, src, query_id=cid, k=5)` and append a block
+"SIMILAR HISTORICAL ATTACK PARADIGMS (inspiration only; NOT this contract's PoC):" + the k paradigm lines to
+`hist`. Loop ids == case ids, so `query_id=cid` cleanly self-excludes. Next: wire it behind an env flag
+(e.g. `USE_RAG=1`) and A/B a few over_budget cases (XSURGE, SATURN, PositionManager, ETHFIN).
