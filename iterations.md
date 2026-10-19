@@ -157,3 +157,8 @@ NO_RAG=1 让 explain() 不把 similar earlier incidents 的 root_cause 拼进 De
 | 20210804_WaultFinace | no_risk | 4 | 模型判定提款均受 onlyOwner/onlyWithdrawer 保护，redeem 为公平 1:1 兑换 |
 | 20260909_BeatXswap | no_risk | 3 | 模型判定提款需 owner 权限或公平 USDT 存入+锁仓，无未授权即时抽取 |
 | SAFE_PCS_Pair_WBNB_BUSD | over_budget | 4 | 等值操作被 LOOP 确认断言正确拒绝（no same-asset victim-loss/attacker-gain），未误报 |
+
+## confirm criterion: cross-asset (offline only)
+- `_loopConfirm` no longer requires same-asset. PASS iff victim net-loss on any tracked asset AND attacker net-gain on any tracked asset AND stolen > paid*(1+THRESH).
+- Tracked assets expanded: BNB/WBNB/USDT/BUSD + up to 4 extras discovered from test source + runtime victim.token0()/token1(). Pricing via victim pair reserves or PCS V2 factory; unknown fallback 1e18.
+- Offline re-check (no model): SAFE skim FAIL (`no victim asset loss`); XSURGE try2 FAIL (`no victim asset loss`); BeatXswap try3 FAIL (`no attacker asset gain` — BTX moved into LP, attacker held 0); POS native PASS. cases.jsonl md5 unchanged. No commit.

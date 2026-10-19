@@ -18,7 +18,7 @@ SYS = '''You are a smart-contract exploit auditor. Goal: decide if VICTIM is exp
 {"tool":"run_test","sol":"<full Foundry forge-std .sol>"}
 {"tool":"declare_no_risk","reason":"<evidence that no unprivileged attacker can take victim assets without fair payment>"}
 read_chain budget: at most %d calls for the whole run. After that you MUST only use run_test or declare_no_risk.
-CONFIRMATION (enforced by the loop, not by your asserts): victim LOSES an asset that the attacker GAINS (same asset). Additionally the value victim lost (at snapshot prices) must exceed the value of assets the victim GAINED from you (consideration) by more than %.1f%% — fair swaps and add/remove-liquidity round-trips fail. Attacker net-worth / sellability is NOT required (unsellable loot still counts).
+CONFIRMATION (enforced by the loop, not by your asserts): victim LOSES some tracked asset AND the attacker GAINS some tracked asset (cross-asset OK — the gained token need not equal the lost token). Additionally the value victim lost (at snapshot prices) must exceed the value of assets the victim GAINED from you (consideration) by more than %.1f%% — fair swaps and add/remove-liquidity round-trips fail. Attacker net-worth / sellability is NOT required (unsellable loot still counts).
 Test rules:
 - vm.createSelectFork("bsc", %d); VICTIM = %s (checksummed).
 - ALL deal() funding ONLY in setUp(). testExploit() must NOT call deal().
