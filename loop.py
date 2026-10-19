@@ -13,21 +13,19 @@ MODEL = os.environ.get('LOOP_MODEL', 'google/gemini-2.5-pro')
 MAXR = int(os.environ.get('MAXR', 4))
 MAX_READ = int(os.environ.get('MAX_READ', 2))
 
-SYS = '''You are a smart-contract exploit auditor. Goal: decide if VICTIM is exploitable by an UNPRIVILEGED attacker; if so PROVE it with a Foundry fork test. Reply EVERY turn with ONLY one JSON object:
+SYS = '''You are a smart-contract exploit auditor. Goal: decide if VICTIM is exploitable by an UNPRIVILEGED attacker and PROVE it with a Foundry fork test. Reply EVERY turn with ONLY one JSON object:
 {"tool":"read_chain","call":"<addr> <sig(types)(rets)> [args...]"}
 {"tool":"run_test","sol":"<full Foundry forge-std .sol>"}
-{"tool":"declare_no_risk","reason":"<concrete evidence that no unprivileged attacker can take victim assets without fair payment>"}
-read_chain budget: at most %d calls for the whole run. After that you MUST only use run_test or declare_no_risk.
-CONFIRMATION (enforced by the loop, not by your asserts): victim LOSES some tracked asset AND the attacker GAINS some tracked asset (cross-asset OK — the gained token need not equal the lost token). Additionally the value victim lost (at snapshot prices) must exceed the value of assets the victim GAINED from you (consideration) by more than %.1f%% — fair swaps and add/remove-liquidity round-trips fail. Attacker net-worth / sellability is NOT required (unsellable loot still counts).
+read_chain budget: at most %d calls for the whole run. After that you MUST only use run_test.
+There is NO "declare safe" / "no risk" action. Your only terminal success is a run_test the loop confirms. If a test fails, read the error and try a DIFFERENT attack or fix; keep going until you confirm or run out of rounds.
+CONFIRMATION (enforced by the loop, not by your asserts): victim LOSES some tracked asset AND the attacker GAINS some tracked asset (cross-asset OK - the gained token need not equal the lost token). Additionally the value victim lost (at snapshot prices) must exceed the value of assets the victim GAINED from you (consideration) by more than %.1f%% - fair swaps and add/remove-liquidity round-trips fail. Attacker net-worth / sellability is NOT required (unsellable loot still counts).
 Test rules:
 - vm.createSelectFork("bsc", %d); VICTIM = %s (checksummed).
 - ALL deal() funding ONLY in setUp(). testExploit() must NOT call deal().
 - In testExploit: attack only, using live reads for fees/mins/balances/prices (no hardcoded mutable constants).
 - Prefer assert-free body; the loop wraps your test with its own confirmation. The victim MUST end with a lower balance of the drained asset than at the start of testExploit; paying in and withdrawing an equal/lesser amount fails confirmation.
 - Only call functions present in the given source. Use checksummed addresses.
-GOAL (per case): reach ONE of two terminal states — (A) CONFIRM an attack (a run_test the loop verifies as victim-loss + attacker-gain), or (B) establish SOLID evidence the victim cannot be drained by an unprivileged attacker.
-no_risk policy (strict): a single failed/reverting run_test is NOT evidence of safety. You MAY reply declare_no_risk ONLY after at least one run_test that COMPILED and EXECUTED, and your reason MUST cite concrete evidence (e.g. every value-moving entry path is owner/role-gated; or you tried an unequal extraction and the loop confirmation correctly reported equal exchange / no victim loss across distinct attempts). declare_no_risk before any compiled+executed run_test will be REJECTED and you must keep working within the round budget.
-When a run_test fails to compile or reverts, that is an ordinary tool result: read the forge error, FIX your test, and submit run_test again — do not give up and do not declare no_risk on it.'''
+When a run_test fails to compile or reverts, that is an ordinary tool result: read the forge error, FIX your test or switch approach, and submit run_test again - do not give up.'''
 
 def one(cid, victim, block, outdir):
     D = Path(outdir); D.mkdir(parents=True, exist_ok=True)
@@ -41,21 +39,15 @@ def one(cid, victim, block, outdir):
     for rnd in range(1, MAXR + 1):
         hint = ''
         if nread >= MAX_READ:
-            hint = f'\n[budget] read_chain exhausted ({nread}/{MAX_READ}). You MUST reply with run_test or declare_no_risk only.'
+            hint = f'\n[budget] read_chain exhausted ({nread}/{MAX_READ}). You MUST reply with run_test only.'
         out = gen_model(MODEL, hist + hint + '\n\nYour next single JSON action:', temp=0.2)
         try: act = json.loads(re.search(r'\{[\s\S]*\}', out).group(0))
         except Exception: act = {}
         tool = act.get('tool')
         hist += f'\n\n[round {rnd}] you: {json.dumps(act)[:500]}'
-        if tool == 'declare_no_risk':
-            if not ran_ok:
-                fb = 'REJECTED declare_no_risk: a single failed/absent run_test is not evidence of safety. You MUST first submit a run_test that COMPILES and EXECUTES (confirmation may still fail), then cite concrete evidence. Keep working.'
-                log.append(('reject', fb)); hist += f'\n[result] {fb}'; continue
-            return {'id': cid, 'outcome': 'no_risk', 'rounds': rnd, 'reason': act.get('reason', '')[:600],
-                    'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'ran_ok': ran_ok}
         if tool == 'read_chain':
             if nread >= MAX_READ:
-                fb = f'REJECTED: read_chain budget exhausted ({MAX_READ}). Use run_test or declare_no_risk.'
+                fb = f'REJECTED: read_chain budget exhausted ({MAX_READ}). Use run_test only.'
                 log.append(('reject', fb)); hist += f'\n[result] {fb}'; continue
             parts = (act.get('call') or '').split()
             if parts: parts[0] = csum(parts[0])
@@ -86,7 +78,7 @@ def one(cid, victim, block, outdir):
                         'log': log, 'sol': sol[:400], 'nread': nread}
             hist += f'\n[result] forge failed (compile/revert/LOOP confirm):\n{fo[-2200:]}'
             continue
-        hist += '\n[result] Unrecognized. Reply ONLY one of the three JSON tools.'
+        hist += '\n[result] Unrecognized. Reply ONLY one of the two JSON tools (read_chain or run_test).'
     return {'id': cid, 'outcome': 'over_budget', 'rounds': MAXR, 'sec': round(time.time() - t0), 'log': log, 'nread': nread}
 
 TARGETS = {

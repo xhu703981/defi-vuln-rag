@@ -226,3 +226,27 @@ Rerun of the 6 (Claude Sonnet 4.5, new policy): no premature no_risk occurred �
 - LPBonus → over_budget (2 tests, LOOP: no victim asset loss)
 
 0 verified. cases.jsonl untouched (md5 31f88a35e14b2d73b23a99c66e2ca145).
+
+---
+
+## Densify build_context (max structural reads) + drop declare_no_risk
+
+**Direction (user):** "能读进去的都应该读进去" — read everything readable into context (structural only, no attack-path/vuln-class leakage). And drop the "确凿无法攻击"/`declare_no_risk` terminal path: goal = confirm attack OR hit MAXR=4; one failed test must keep iterating.
+
+### verify_ctx.py — new/expanded sections
+- **Live address-getter harvesting (`harvest_live_addrs`)**: calls every zero-arg public/external view getter and every public var (ANY type, incl. custom/struct) raw via `cast call victim NAME()`, parses the returndata into 32-byte words and extracts left-padded 20-byte address words. Filters uint false-positives by requiring the candidate to have bytecode (`cast code`). This finally follows struct members (e.g. PositionManager `poolData` → mainPool/token0Pool/token1Pool/chainlinkDataFeed) and custom-typed public addresses (`IERC20 public baseToken`) that the old primitive-typed probing missed.
+- **Discovered addresses auto-join RELATED + get probed** as pool (reserves/slot0/fee/liquidity/token0-1/pool balances) or token (symbol/decimals/supply), tagged `(via <getter>())`.
+- **Pool token backfill**: any discovered pool's token0/token1 is probed and added to TOKENS so every referenced token has decimals/supply.
+- **Entry points now full signatures** (params + `payable`) instead of names only, plus `receive()`/`fallback()` flagged as raw value receivers.
+- **Related non-pool roles** now also show live USDT balance + ERC20 decimals when applicable, not just native BNB.
+- Unchanged invariants: all mutable params read LIVE via cast at fork block; header is structural-only; no attack path / vuln class leaked.
+
+**Density effect (CONTEXT.txt chars, before → after):**
+- BeatXswap 2776 → 3122
+- XSURGE 2090 → 2289
+- SATURN 3539 → 4797
+- PositionManager 2103 → 3359 (now surfaces the V3 main pool via `poolData()` with reserves/slot0/pool balances + backfilled BTCB — previously the pool was entirely absent)
+
+### loop.py — policy
+- Removed `declare_no_risk` entirely (tool + handler + budget hints). SYS states there is NO "declare safe" action; the only terminal success is a run_test the loop confirms.
+- `MAXR=4` kept; on forge fail the error tail is fed back and the model keeps writing/fixing until the cap. Non-confirm terminal is now `over_budget`.
