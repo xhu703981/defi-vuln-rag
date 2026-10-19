@@ -199,3 +199,30 @@ NO_RAG=1 让 explain() 不把 similar earlier incidents 的 root_cause 拼进 De
 | 20260929_LPBonus | no_risk | 4 | 50 |
 | 20260930_PositionManager | over_budget | 4 | 37 |
 | SAFE_PCS_Pair_WBNB_BUSD | no_risk | 3 | 38 |
+
+## Fix 6 wrong victim addresses + strict goal-loop policy (Oct 19)
+
+Expansion had extracted victim from PoC KeyInfo incorrectly for 6 cases (token/router instead of the "Vulnerable Contract"). Fixed TARGETS to the KeyInfo "Vulnerable Contract" address (metadata only; no PoC attack steps fed to the model):
+
+| case | old (wrong) | new (Vulnerable Contract) |
+|------|-------------|---------------------------|
+| 20221001_BabySwap | 0x53e5…2657 | 0x5c9f1a9ced41ccc5dcecda5afc317b72f1e49636 (SwapMining) |
+| 20221006_RES-Token | 0x04c0…2de7 (ALL_TOKEN) | 0xeccd8b08ac3b587b7175d40fb9c60a20990f8d21 (RES) |
+| 20221018_HPAY | 0xc75a…521a (HPAY ERC20) | 0xe9bc03ef08e991a99f1bd095a8590499931dcc30 (MintableAutoCompundRelockBonus) |
+| 20240329_ETHFIN | 0xa964…a96c | 0x17bd2e09fa4585c15749f40bb32a6e3db58522ba (EthernalFinanceII) |
+| 20250426_Lifeprotocol | 0x19b2…4197 (lifeToken) | 0x42e2773508e2ae8ff9434bea599812e28449e2cd (LifeProtocolContract) |
+| 20260929_LPBonus | 0xd8b3…97c1 (MSN token) | 0x52272524a22f941f5489c1233732797314bb054b (LPBonus; block→124759920) |
+
+All 6 new addresses have verified source fetchable from BscScan.
+
+**Goal-loop policy (SYS + loop.py):** each case must reach one of two terminal states — confirm an attack (verifier PASS) or solid evidence it cannot be drained. A single failed/reverting run_test is NOT evidence of safety: `declare_no_risk` is now REJECTED and fed back unless at least one run_test has COMPILED+EXECUTED (tracked via `ran_ok`, using `parse_reason != 'compile error'`), and the reason must cite concrete evidence. Compile/revert errors feed back for a fix within the same MAXR=4 budget (no jump to no_risk). Kept simple, Grok Build style.
+
+Rerun of the 6 (Claude Sonnet 4.5, new policy): no premature no_risk occurred — every case ran ≥1 compiled test.
+- BabySwap → no_risk (1 test, LOOP: no victim asset loss)
+- ETHFIN → no_risk (1 test, LOOP: no victim asset loss)
+- RES-Token → over_budget (2 tests, Pancake TRANSFER_FAILED)
+- HPAY → over_budget (2 tests, revert)
+- Lifeprotocol → over_budget (2 tests, Invalid trade amount)
+- LPBonus → over_budget (2 tests, LOOP: no victim asset loss)
+
+0 verified. cases.jsonl untouched (md5 31f88a35e14b2d73b23a99c66e2ca145).
