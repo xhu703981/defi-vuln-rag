@@ -6,12 +6,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from llm import gen_model
 import fetch_source as fs
 import verify_ctx as vc
+import index as idx
 
 from confirm import (FORGE, CAST, TO, THRESH, WBNB, USDT, BUSD, redact, csum, fix_addrs,
                      bogus, confirm_helper, inject_confirm, write_proj, run_forge, parse_reason)
 MODEL = os.environ.get('LOOP_MODEL', 'google/gemini-2.5-pro')
 MAXR = int(os.environ.get('MAXR', 4))
 MAX_READ = int(os.environ.get('MAX_READ', 2))
+USE_RAG = os.environ.get('USE_RAG', '1') != '0'
+RAG_K = int(os.environ.get('RAG_K', 5))
 
 SYS = '''You are a smart-contract exploit auditor. Goal: decide if VICTIM is exploitable by an UNPRIVILEGED attacker and PROVE it with a Foundry fork test. Reply EVERY turn with ONLY one JSON object:
 {"tool":"read_chain","call":"<addr> <sig(types)(rets)> [args...]"}
@@ -35,6 +38,23 @@ def one(cid, victim, block, outdir):
     ctx = vc.build_context(block, victim, src)
     (D / 'CONTEXT.txt').write_text(ctx)
     hist = (SYS % (MAX_READ, THRESH * 100, block, victim)) + '\n\nPRE-READ live on-chain context (already fetched; use read_chain only if something critical is missing):\n' + ctx + '\n\nVerified victim source:\n' + src
+    refs_used = []
+    if USE_RAG:
+        try:
+            refs = idx.retrieve_refs(ctx, src, query_id=cid, k=RAG_K)
+        except Exception as e:
+            refs = []
+            log_err = f'RAG error: {type(e).__name__}: {e}'
+        else:
+            log_err = None
+        if refs:
+            refs_used = [{'id': r['id'], 'paradigm': r['paradigm'], 'score': r['score']} for r in refs]
+            sec = 'SIMILAR HISTORICAL ATTACK PARADIGMS (inspiration only; NOT this contract\'s PoC):\n'
+            for r in refs:
+                sec += f"- [{r['category']}] {r['paradigm']} | tags via {r['why']}\n"
+            hist += '\n\n' + sec
+        elif log_err:
+            refs_used = [{'error': log_err}]
     log, t0, nread, ran_ok = [], time.time(), 0, False
     for rnd in range(1, MAXR + 1):
         hint = ''
@@ -75,11 +95,11 @@ def one(cid, victim, block, outdir):
                 ran_ok = True
             if ok:
                 return {'id': cid, 'outcome': 'verified', 'rounds': rnd, 'sec': round(time.time() - t0),
-                        'log': log, 'sol': sol[:400], 'nread': nread}
+                        'log': log, 'sol': sol[:400], 'nread': nread, 'refs': refs_used}
             hist += f'\n[result] forge failed (compile/revert/LOOP confirm):\n{fo[-2200:]}'
             continue
         hist += '\n[result] Unrecognized. Reply ONLY one of the two JSON tools (read_chain or run_test).'
-    return {'id': cid, 'outcome': 'over_budget', 'rounds': MAXR, 'sec': round(time.time() - t0), 'log': log, 'nread': nread}
+    return {'id': cid, 'outcome': 'over_budget', 'rounds': MAXR, 'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'refs': refs_used}
 
 TARGETS = {
     # baseline (keep)

@@ -279,3 +279,15 @@ price_manipulation (Jimbo, SellToken02) alongside access_control — the right d
 "SIMILAR HISTORICAL ATTACK PARADIGMS (inspiration only; NOT this contract's PoC):" + the k paradigm lines to
 `hist`. Loop ids == case ids, so `query_id=cid` cleanly self-excludes. Next: wire it behind an env flag
 (e.g. `USE_RAG=1`) and A/B a few over_budget cases (XSURGE, SATURN, PositionManager, ETHFIN).
+
+## Vectorless RAG wired into loop (USE_RAG default on) + A/B on 4 over_budget cases
+- loop.py::one now calls index.retrieve_refs(ctx, src, query_id=cid, k=5) after build_context, appends
+  "SIMILAR HISTORICAL ATTACK PARADIGMS (inspiration only; NOT this contract's PoC)" section (paradigm + category + Jev why). Catalogue + Jev only; no embeddings. Query case excluded from candidates (no self-PoC leak).
+- Claude Sonnet 4.5, refs on. Outcome vs prior dense-only (all 4 were over_budget):
+  | case | before | after(refs) | rounds |
+  |------|--------|-------------|--------|
+  | 20260930_PositionManager | over_budget | over_budget | 4 |
+  | 20210817_XSURGE | over_budget | over_budget | 4 |
+  | 20240507_SATURN | over_budget | over_budget | 4 |
+  | 20240329_ETHFIN | over_budget | over_budget | 4 |
+- 0 flipped to verified. Refs were on-paradigm (XSURGE/SATURN -> price-manipulation; PositionManager -> reentrancy/access-control), but didn't move these 4 over the line within MAXR=4. cases.jsonl untouched.
