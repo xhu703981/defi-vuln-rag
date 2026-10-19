@@ -167,3 +167,35 @@ NO_RAG=1 让 explain() 不把 similar earlier incidents 的 root_cause 拼进 De
 - Pushed confirm cross-asset: `62974d1`.
 - Expanded `TARGETS` to 22 BSC cases (4 baseline + 18 new). Victim/block from PoC KeyInfo headers only; never fed to model. Skipped Unverified / PancakePair / proxy-only addresses.
 - Batch run: `LOOP_MODEL=anthropic/claude-sonnet-4.5` parallel 4, MAXR=4.
+
+## Expand batch (Claude Sonnet 4.5, 22 BSC TARGETS, cross-asset confirm)
+- Model: `anthropic/claude-sonnet-4.5`, MAXR=4, workers≤4.
+- Mid-run OpenRouter HTTP 402 once; resumed remaining 14 after probe OK. loop.py now catches per-case exceptions so one failure does not abort the pool.
+- Outcome counts: **{'no_risk': 15, 'over_budget': 7}**. verified=none.
+- Wall clock ~17:17–17:25 America/New_York (first wave + resume). Summary: `expand_batch_summary.json` (data/ still gitignored).
+- cases.jsonl md5 unchanged `31f88a35e14b2d73b23a99c66e2ca145`.
+
+| id | outcome | rounds | sec |
+|---|---|---|---|
+| 20210804_WaultFinace | no_risk | 4 | 42 |
+| 20210817_XSURGE | over_budget | 4 | 50 |
+| 20221001_BabySwap | no_risk | 2 | 19 |
+| 20221006_RES-Token | no_risk | 4 | 34 |
+| 20221012_ATK | no_risk | 4 | 51 |
+| 20221018_HPAY | no_risk | 3 | 27 |
+| 20221025_ULME | no_risk | 4 | 37 |
+| 20230704_BambooIA | no_risk | 4 | 29 |
+| 20240329_ETHFIN | over_budget | 4 | 49 |
+| 20240507_SATURN | over_budget | 4 | 65 |
+| 20240529_MetaDragon | no_risk | 3 | 65 |
+| 20250121_Ast | no_risk | 4 | 35 |
+| 20250316_wKeyDAO | no_risk | 3 | 18 |
+| 20250426_Lifeprotocol | no_risk | 2 | 15 |
+| 20250427_bitdog | over_budget | 4 | 20 |
+| 20250519_BetaPresale | over_budget | 4 | 32 |
+| 20260909_BeatXswap | over_budget | 4 | 47 |
+| 20260911_GDC | no_risk | 4 | 14 |
+| 20260911_ORB | no_risk | 3 | 11 |
+| 20260929_LPBonus | no_risk | 4 | 50 |
+| 20260930_PositionManager | over_budget | 4 | 37 |
+| SAFE_PCS_Pair_WBNB_BUSD | no_risk | 3 | 38 |

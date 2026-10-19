@@ -120,4 +120,10 @@ if __name__ == '__main__':
     with ThreadPoolExecutor(max_workers=min(4, len(ids))) as ex:
         futs = {ex.submit(run_one, cid): cid for cid in ids}
         for fut in as_completed(futs):
-            print(json.dumps(fut.result(), ensure_ascii=False), flush=True)
+            cid = futs[fut]
+            try:
+                print(json.dumps(fut.result(), ensure_ascii=False), flush=True)
+            except Exception as e:
+                err = {'id': cid, 'outcome': 'error', 'error': f'{type(e).__name__}: {e}'[:400]}
+                print(json.dumps(err, ensure_ascii=False), flush=True)
+                json.dump(err, open(f'data/loop/{slug(cid)}.json', 'w'), ensure_ascii=False, indent=1)
