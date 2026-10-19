@@ -6,18 +6,3 @@ data/
 cache/
 DeFiHackLabs/
 .DS_Store
-# intermediate / experimental outputs (keep main sources)
-cases_*.jsonl
-!cases.jsonl
-*_out.jsonl
-*_out.json
-adv_out.jsonl
-c4_out.jsonl
-c4_targets.jsonl
-pilot_out*.jsonl
-g_pipe.jsonl
-g_targets.jsonl
-exp_direct_out.json
-f_dev*.jsonl
-analysis/
-/tmp/

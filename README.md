@@ -1,12 +1,18 @@
-# defi-vuln-rag (MVP)
-DeFiHackLabs → 4 类案例 (price_manipulation / access_control / reentrancy / precision) → 三表示索引 → 混合检索 + RRF → 时间切分留一评测。
+# defi-vuln-rag
+
+Goal-driven DeFi smart-contract auditor loop (3 steps):
+
+1. Fetch verified source (Etherscan, follow proxy) + live `cast` reads of mutable on-chain state at the fork block.
+2. Strong LLM (`gemini-2.5-pro` via `llm.gen_model`) proposes an attack and writes a Foundry fork test.
+3. `forge` confirms: victim asset balance drops AND the same asset moves into an attacker-controlled address.
+
+Agent loop (`loop.py`) follows Grok Build's turn style: one tool call per round (`read_chain` / `run_test` / `declare_no_risk`), tool result fed back into history, until VERIFIED, NO_RISK, or `MAXR` (default 4).
+
 ```
-python3 -m venv .venv && .venv/bin/pip install rank_bm25 sentence-transformers torch --extra-index-url https://download.pytorch.org/whl/cpu
-git clone --depth 1 https://github.com/SunWeb3Sec/DeFiHackLabs
-.venv/bin/python build_corpus.py      # -> cases.jsonl
-.venv/bin/python rag.py               # 评测
-.venv/bin/python rag.py X.sol         # 按函数查相似案例
+.venv/bin/python loop.py 20210817_XSURGE          # one case
+.venv/bin/python loop.py                          # all TARGETS in loop.py
 ```
-.venv/bin/python fetch_source.py   # 需 ETHERSCAN_API_KEY；缓存在 data/，code=受害合约源码，poc 另存
-ONLY=victim MODES=code .venv/bin/python rag.py  # 只评有源码的子集
-局限：llm_describe / llm_rerank 为桩，需 LLM key。
+
+Requires `BSC_RPC`, `OPENROUTER_API_KEY`, `ETHERSCAN_API_KEY` in the environment (never printed). `cases.jsonl` is the immutable corpus (md5 `31f88a35e14b2d73b23a99c66e2ca145`); never feed PoC/README/attack-tx to the generator.
+
+Kept: `loop.py`, `fetch_source.py`, `llm.py`, `verify_ctx.py`, `rag_utils.py`, `cases.jsonl`, `iterations.md`, `README.md`, `data/` (caches + loop runs), `DeFiHackLabs/` (corpus source, post-hoc only).

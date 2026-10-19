@@ -127,3 +127,18 @@ NO_RAG=1 让 explain() 不把 similar earlier incidents 的 root_cause 拼进 De
 合计: 直读 @1 3/5, @3 4/5; 流水线 @1 2/5(按 finding 只有 XSURGE/MonoX 有 finding, 且 MonoX 错), @3 2/5。无类别回退, 直读机制描述明显更具体。
 成本/耗时: gemini-2.5-pro 每例 $0.066~0.132(推理 token 5k~9.6k 占大头), 5 例合计 ~$0.53; 单例 ~1~1.5 分钟。流水线每例 ~$0.003(Jev+DeepSeek)。
 结论: 小样本(n=5, judge 噪声±1)下直读不差且更准, 尤其价格操纵类; 成本高约 40x 但绝对值仍低(~$0.1/合约)。值得在 27 个 f_dev 全量验证后再决定是否用直读替代 Jev 打标/排序/复核; 权限/精度两类两边都弱, 不是这一步的瓶颈。
+
+## 实验 H: goal-driven loop (3步主线) 小量测 (2026-10-19, 新文件 loop.py, 复用 fetch_source/llm/verify_ctx)
+参考 Grok Build (github.com/xai-org/grok-build) 的 agent loop: 每轮"组装上下文→模型产出单个工具调用(JSON)→分发执行→把结果回喂进对话历史→重复, 直到终止态或回合预算(MAXR=4)耗尽"。本 loop 把它特化成3个工具: read_chain(cast 实时读链上值)、run_test(forge fork 执行)、declare_no_risk(有理由地判无风险)。Goal 为运行时状态, 两终止态: VERIFIED(forge 跑通+反作弊) 或 NO_RISK。确认判据: 受害者某资产下降且同一资产进入攻击者=成功, 攻击者净赚不计。反作弊: deal() 只在快照前。链上周边状态(min值/余额/价格)全部 fork 区块 cast 实时读, 不用源码常量。模型 gemini-2.5-pro via gen_model。绝不读 PoC/README, 密钥/RPC 不打印, URL 遮蔽。
+只测 BSC 案例(仅有 BSC_RPC; MonoX 在 mainnet, 无 RPC, 本轮跳过)。
+| 案例 | 结局 | 轮数 | 耗时 |
+| XSURGE(重入/首购价格) | **verified** | 2 | 116s |
+| Wault(价格操纵) | over_budget | 4 | 243s |
+| BeatXswap(价格操纵) | over_budget | 4 | 325s |
+| SAFE_PCS_Pair_WBNB_BUSD(应判no-risk) | **误报 verified** | 4 | 495s |
+成本: 本轮 loop 共约20次 gemini 调用, ~$1.6。
+失败归因(有证据):
+- Wault: 4 轮全花在 read_chain(读 usdt/wex/wusd 等地址), 没留回合写测试就超预算 → 预算分配问题, 模型读太多不动手。
+- BeatXswap: 浪费一轮在 forge 编译错误——VICTIM 地址用了小写, forge 报 invalid checksum 直接编译失败(非逻辑错)。4 轮没跑通。
+- SAFE pair 误报: loop 对安全的 PancakePair 也"跑通"了一个 test(burn/skim/加减流动性往返), 判成 verified。说明当前判据(同资产一增一减)对 AMM pair 这类合约太松, 普通 LP 操作就能让 pair 某资产减少、attacker 增加→假阳性。declare_no_risk 从未被触发。
+可修方向(未改): (1) 给模型传 checksum 过的地址, 或 loop 侧自动 toChecksumAddress, 省掉编译往返; (2) 提高 MAXR 或区分"读预算/测试预算", 避免读爆预算; (3) 收紧判据防 AMM 假阳性(例如要求攻击者无需等额注入对价、或净头寸提升), 否则安全合约会被误报。结论: loop 骨架可用(XSURGE 两轮确认), 但判据与预算需要再打磨才能既确认真洞又对安全合约给出 no-risk。

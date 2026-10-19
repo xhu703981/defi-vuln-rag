@@ -1,14 +1,9 @@
-# Reusable N=1 verifier with LIVE on-chain CONTEXT (no hardcoded constants), no mechanism hint, gpt-5.3-codex.
-# NEW confirmation criterion: victim asset decreased AND that asset ended up with the attacker (same-asset gain).
-# NEVER reads DeFiHackLabs PoCs/READMEs. Anti-cheat: fund via deal() BEFORE snapshot; no deal() after.
-# Usage: BSC_RPC=... .venv/bin/python verify_ctx.py <id> <victim> <block> <outdir>
+# Live on-chain context helpers for loop.py: cast at fork block + build_context.
+# Mutable values ALWAYS read live; never trust source constants. RPC/keys never printed.
 import re, json, os, sys, subprocess, time
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
-from llm import gen_model
 import fetch_source as fs
-FORGE = os.path.expanduser('~/.foundry/bin/forge'); CAST = os.path.expanduser('~/.foundry/bin/cast')
-MODEL = 'openai/gpt-5.3-codex'; TO = 150
+CAST = os.path.expanduser('~/.foundry/bin/cast')
 WBNB, USDT, BUSD = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', '0x55d398326f99059fF775485246999027B3197955', '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56'
 def redact(s): return re.sub(r'https?://\S+', '<RPC>', s or '')
 def cast(block, *args, timeout=30):
@@ -70,43 +65,3 @@ def build_context(block, victim, src):
         lines.append(f'\nDEP {a}: ' + json.dumps(info))
     lines.append('\nCommon BSC: WBNB '+WBNB+', USDT '+USDT+', BUSD '+BUSD+'. PancakeV2 pair swap(uint,uint,address,bytes)+pancakeCall; V3 pool swap(...)+pancakeV3SwapCallback. MIN_SQRT+1=4295128740; MAX_SQRT-1=1461446703485210103287273052203988822378723970341.')
     return '\n'.join(lines)
-RULES = '''Write a Foundry forge-std Test (Solidity) proving an EXTERNAL exploit on BSC of VICTIM.
-CONFIRMATION CRITERION (this is what success means):
-- The victim must LOSE some asset (a token or native BNB it holds), AND that same asset must end up controlled by the attacker (this test contract or an attacker-controlled address): the attacker's balance of THAT SAME asset must rise by ~the victim's loss.
-- You do NOT need to convert the loot into USDT/WBNB profit. Draining the victim into attacker control is success.
-Hard PoC rules:
-- vm.createSelectFork("bsc", %d); the vulnerable contract VICTIM = %s.
-- Fund yourself with deal() (WBNB/USDT/BUSD/native) FIRST, with enough to execute. THEN snapshot: the victim's balance of the asset you will drain AND the attacker's balance of that SAME asset.
-- Do NOT hardcode thresholds/fees/balances/prices/token addresses: READ them live (view getters, balanceOf, slot0, getReserves). Source constants may be stale.
-- After the snapshot: NO deal(). Attack only, using real on-chain state.
-- End with: assertLt(victimAssetAfter, victimAssetBefore);  assertGt(attackerAssetAfter, attackerAssetBefore);  and the attacker-gain asset MUST be the exact same asset the victim lost.
-- Reply with ONLY the .sol file contents (no markdown, no prose).
-'''
-def bogus(src):
-    parts = re.split(r'[Bb]efore\s*=|snapshot', src)
-    return len(parts) > 1 and 'deal(' in ''.join(parts[1:])
-def main():
-    cid, victim, block, outdir = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
-    D = Path(outdir); (D/'test').mkdir(parents=True, exist_ok=True)
-    r = fs.get(56, victim); src = fs.main_code('\n'.join(fs.files(r['SourceCode']).values()), r['ContractName'])[:50000]
-    # hypothesis (where to look) from pilot_rank: top pick only, no mechanism hint beyond tool output
-    hyp = ''
-    for c in map(json.loads, open('pilot_rank.jsonl')):
-        if c['id'] == cid:
-            p = (c.get('picks') or [{}])[0]
-            cl = sorted(c.get('claims') or [], key=lambda x:-x.get('conf',0))
-            path = (cl[0].get('path') if cl else '') or p.get('why','')
-            hyp = f"Target function: {p.get('name','?')}\nPath: {path}"
-    t0 = time.time(); ctx = build_context(block, victim, src); print('ctx built', round(time.time()-t0,1),'s', flush=True)
-    (D/'CONTEXT.txt').write_text(ctx)
-    prompt = (RULES % (block, victim)) + '\nCHAIN=bsc\n\nHypothesis from the auditor tool (where to look):\n' + hyp + '\n\n' + ctx + '\n\nVerified victim source:\n' + src
-    (D/'prompt.txt').write_text(prompt); print('prompt chars', len(prompt), flush=True)
-    t1 = time.time(); out = gen_model(MODEL, prompt, temp=0.2); print('gen', round(time.time()-t1,1),'s out', len(out), flush=True)
-    sol = re.sub(r'^```\w*\n?|```$', '', out.strip(), flags=re.M)
-    (D/'test/Attack.t.sol').write_text(sol); (D/'raw_out.txt').write_text(out)
-    if bogus(sol): print('WARN anti-cheat: possible deal() after snapshot — inspect', flush=True)
-    (D/'foundry.toml').write_text('[profile.default]\nsrc="src"\nout="out"\nlibs=["lib"]\n[rpc_endpoints]\nbsc="${BSC_RPC}"\n')
-    if not (D/'lib/forge-std').exists(): subprocess.run([FORGE,'install','foundry-rs/forge-std','--no-git'], cwd=D, capture_output=True)
-    (D/'remappings.txt').write_text('forge-std/=lib/forge-std/src/\n')
-    print('sol written', len(sol), 'chars', flush=True)
-if __name__ == '__main__': main()
