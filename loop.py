@@ -82,10 +82,30 @@ def one(cid, victim, block, outdir):
     return {'id': cid, 'outcome': 'over_budget', 'rounds': MAXR, 'sec': round(time.time() - t0), 'log': log, 'nread': nread}
 
 TARGETS = {
+    # baseline (keep)
     '20260909_BeatXswap': ('0x1e647faadb05f2124bfccfc003edc06d1a90bf5d', 120873719 - 1),
     '20210817_XSURGE': ('0xe1e1aa58983f6b8ee8e4ecd206cea6578f036c21', 10087723 - 1),
     '20210804_WaultFinace': ('0xa79fe386b88fbee6e492eeb76ec48517d1ec759a', 9728755 - 1),
     'SAFE_PCS_Pair_WBNB_BUSD': ('0x58f876857a02d6762e0101bb5c46a8c1ed44dc16', 48500000),
+    # expanded BSC batch — victim+block from PoC KeyInfo only (never fed to model)
+    '20260930_PositionManager': ('0x7cedb2e5d7791c7d46c5c9d35eac4775bc887f00', 124829768),
+    '20260929_LPBonus': ('0xd8b3ef86afce18edba91fed481abe22f173597c1', 124759919),
+    '20260911_ORB': ('0xc4d27261c06407053cad16cb825ecc0eee7ee7d7', 121296108),
+    '20260911_GDC': ('0xe3342358e7ccbaebdd1139ad0274c53c5b3ef822', 121253212),
+    '20250519_BetaPresale': ('0x760c2aaa22220f24b9343b2a91a62dd664953853', 49951832),
+    '20250427_bitdog': ('0x4bbb53252b0cee84e6824e85989ea2eddeec25f1', 48728492),
+    '20250426_Lifeprotocol': ('0x19b2834f99fb9eb4164cb5b49046ec207f894197', 48703545),
+    '20250316_wKeyDAO': ('0xd511096a73292a7419a94354d4c1c73e8a3cd851', 47469059),
+    '20250121_Ast': ('0xc10e0319337c7f83342424df72e73a70a29579b2', 45964638),
+    '20240529_MetaDragon': ('0xef1f39d8391cddcaee62b8b383cb992f46a6ce4f', 39141425),
+    '20240507_SATURN': ('0x9bdf251435cbc6774c7796632e9c80b233055b93', 38488208),
+    '20240329_ETHFIN': ('0xa964a6dab034a4b5985603f7e86a596c7e0ea96e', 37400484),
+    '20230704_BambooIA': ('0xed56784bc8f2c036f6b0d8e04cb83c253e4a6a94', 29668033),
+    '20221025_ULME': ('0xae975a25646e6eb859615d0a147b909c13d31fed', 22476694),
+    '20221018_HPAY': ('0xc75aa1fa199eac5adabc832ea4522cff6dfd521a', 22280852),
+    '20221012_ATK': ('0x9cb928bf50ed220ac8f703bce35be5ce7f56c99c', 22102837),
+    '20221006_RES-Token': ('0x04c0f31c0f59496cf195d2d7f1da908152722de7', 21948015),
+    '20221001_BabySwap': ('0x53e562b9b7e5e94b81f10e96ee70ad06df3d2657', 21811978),
 }
 
 if __name__ == '__main__':
