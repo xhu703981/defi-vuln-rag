@@ -67,6 +67,16 @@ GOAL_STRATEGIST_EVERY = int(os.environ.get('GOAL_STRATEGIST_EVERY', 0)) or max(1
 # cadence only re-arms late and the reread, when chained to it, fired only on the last turn — the
 # ORB bug). N small so the reread fires on the FIRST cadence hit; skip-robust `>= last_fired + N`.
 GOAL_REREAD_EVERY = int(os.environ.get('GOAL_REREAD_EVERY', 2))
+# ---- general operator knobs (env-driven; no per-case hardcoding, no exploit constants) ----
+# ROUTE_HINT: an advisory, HOW-only route description the operator can pin so the agent spends
+# its budget on PoC engineering rather than re-discovering a known-correct direction. It is a
+# free-text method description (no addresses/amounts), injected as an advisory block + seeded as
+# the top plan item. STRATEGIST_NO_REDIRECT: demote the strategist to NON-directional hints only
+# (it may still advise precondition/poc-shape/fair-value/RAG pivots, but may NOT redirect the
+# entrypoint). TRACE_CHARS: cap on the -vvvv trace tail fed back each rerun (raise for fuller traces).
+ROUTE_HINT = (os.environ.get('ROUTE_HINT') or '').strip()
+STRATEGIST_NO_REDIRECT = os.environ.get('STRATEGIST_NO_REDIRECT', '0') != '0'
+TRACE_CHARS = int(os.environ.get('TRACE_CHARS', 9000))
 
 # goal_strategist.rs:82 strategist_should_fire — skip-robust (>= last_fired + every, not strict %).
 def strategist_should_fire(consecutive, last_fired, every):
@@ -217,7 +227,7 @@ def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_his
         # gap each round) or when the route looks close, the redirect candidates are withheld so the
         # strategist cannot yank a near-working route onto a different entrypoint. Non-directional
         # diagnoses (precondition / poc-shape / fair-value) and unused RAG paradigms stay available.
-        allow_redirect = (trigger == 'stall') and not route_close
+        allow_redirect = (trigger == 'stall') and not route_close and not STRATEGIST_NO_REDIRECT
         cand = [c for c in STRUCTURAL_DIAGNOSES if allow_redirect or not c.get('redirect')]
         # RAG paradigms the loop has NOT converged on become extra candidate pivots (KEY FEATURE kept).
         rag_lines = [ln[2:].strip() for ln in (hints or '').splitlines() if ln.strip().startswith('-')]
@@ -469,12 +479,13 @@ def run_forge_verbose(d):
         return False, f'forge timeout {TO}s'
 
 def _trace_for_agent(out):
-    """Keep what the agent needs: compile errors in full-ish, else the tail with the call tree + logs."""
+    """Keep what the agent needs: compile errors in full-ish, else the tail with the call tree + logs.
+    The tail cap is TRACE_CHARS (operator-raisable for fuller -vvvv feedback)."""
     if re.search(r'Compiler run failed|ParserError|Error \(\d+\)', out):
         errs = re.findall(r'(?:Error|ParserError)[^\n]*(?:\n[^\n]*){0,6}', out)
-        head = '\n---\n'.join(errs[:6])
-        return ('COMPILE ERRORS:\n' + head + '\n\n--- output tail ---\n' + out[-2500:])[:9000]
-    return out[-9000:]
+        head = '\n---\n'.join(errs[:12])
+        return ('COMPILE ERRORS:\n' + head + '\n\n--- output tail ---\n' + out[-(TRACE_CHARS//3):])[:TRACE_CHARS]
+    return out[-TRACE_CHARS:]
 
 PROBE_TMPL = '''// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
@@ -553,6 +564,12 @@ def one(cid, victim, block, outdir):
         {'id': 'p4', 'text': 'Implement preconditions (asserted) THEN the attack action in a rerun; read the -vvvv trace and fix the next concrete blocker.', 'done': False},
         {'id': 'p5', 'text': 'Get a rerun the loop confirms (victim net-loss above threshold).', 'done': False},
     ]
+    # Operator ROUTE HINT (advisory, HOW-only): pin a known-correct direction as the TOP plan item so
+    # the budget is spent engineering the PoC, not re-discovering the entrypoint. General mechanism;
+    # the hint text carries no exploit constants.
+    if ROUTE_HINT:
+        plan_items.insert(0, {'id': 'r0', 'text': 'PINNED ROUTE (operator hint — engineer THIS; do not switch entrypoint): ' + ROUTE_HINT, 'done': False})
+
     if USE_RAG:
         try:
             refs = idx.retrieve_refs(ctx, main_src, query_id=cid, k=RAG_K)
@@ -571,7 +588,11 @@ def one(cid, victim, block, outdir):
             + '\n\n# LIVE ON-CHAIN CONTEXT (fork block ' + str(block) + ', read via cast):\n' + ctx
             + f'\n\n# VERIFIED VICTIM SOURCE (contract {cname}; {len(full_lines)} lines across its files — PREVIEW below, use read_source grep/range for the rest):\n'
             + main_src[:SRC_PREVIEW] + ('\n...<preview truncated; read_source for more>' if len(main_src) > SRC_PREVIEW else '')
-            + '\n\n# HISTORICAL ATTACK PARADIGMS (advisory hints only; NOT this contract\'s PoC):\n' + hints)
+            + '\n\n# HISTORICAL ATTACK PARADIGMS (advisory hints only; NOT this contract\'s PoC):\n' + hints
+            + (('\n\n# OPERATOR ROUTE HINT (advisory, HOW only — the entrypoint/direction is already '
+                'known-correct; spend your turns ENGINEERING this PoC, do not re-discover or switch the '
+                'entrypoint; still read live state and the verified source to get the mechanics right):\n'
+                + ROUTE_HINT) if ROUTE_HINT else ''))
 
 
     objective = (f'Prove VICTIM {victim} is exploitable by an UNPRIVILEGED attacker with a '
