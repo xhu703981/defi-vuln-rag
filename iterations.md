@@ -291,3 +291,12 @@ price_manipulation (Jimbo, SellToken02) alongside access_control — the right d
   | 20240507_SATURN | over_budget | over_budget | 4 |
   | 20240329_ETHFIN | over_budget | over_budget | 4 |
 - 0 flipped to verified. Refs were on-paradigm (XSURGE/SATURN -> price-manipulation; PositionManager -> reentrancy/access-control), but didn't move these 4 over the line within MAXR=4. cases.jsonl untouched.
+
+## Victim pool-position exposure in build_context (USE_RAG kept on)
+- `verify_ctx.py`: for each discovered RELATED pool, now reports how much of it the VICTIM itself owns as an LP (not just pool totals), read LIVE at the fork block:
+  - V2 pair: victim LP-token balance + % of supply + `~claimable token0/token1` (reserves × share).
+  - PancakeV3 pool: victim's concentrated position via `positions(keccak256(owner,tickLower,tickUpper))` using the victim's own int24-pair view getters (e.g. `getTickRange()`); emits `VICTIM V3 position [ticks a,b]: liquidity=… (of pool liquidity …) tokensOwed0/1`.
+  - Helpers added: `_ints`, `_i24hex`, `keccak_hex` (cast keccak, no `--block`), `victim_pool_exposure`. Structural exposure only; no attack-path leakage.
+- PositionManager CONTEXT now shows its real exposure (wallet USDT is 19 dust, but it holds V3 `liquidity=992703838161699941207` in the USDT/BTCB mainPool `0x46cf…`, ~0.16% of pool liquidity).
+- Rerun (Claude sonnet-4.5, MAXR=4): PositionManager over_budget → over_budget. This run both run_test attempts died on a forge-std toolchain compile error (`vm.getNonce` / `vm.computeCreateAddress` undeclared in pinned forge-std), so the new exposure field was never exercised in a running test — not an exposure/context gap. XSURGE / SATURN / ETHFIN also still over_budget (unchanged; different bottlenecks: reentrancy write, routing, long reward chain).
+- cases.jsonl untouched (md5 31f88a35…). RPC/keys redacted.

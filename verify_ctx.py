@@ -15,6 +15,11 @@ def cast(block, *args, timeout=30):
                            capture_output=True, text=True, timeout=timeout)
         return (r.stdout.strip() or ('ERR:' + redact(r.stderr.strip())[:120]))
     except Exception as e: return 'ERR:' + str(e)[:80]
+def keccak_hex(hexstr):
+    try:
+        r = subprocess.run([CAST, 'keccak', hexstr], capture_output=True, text=True, timeout=15)
+        return (r.stdout.strip() or ('ERR:' + redact(r.stderr.strip())[:80]))
+    except Exception as e: return 'ERR:' + str(e)[:60]
 def is_addr(s): return bool(re.match(r'0x[0-9a-fA-F]{40}$', (s or '').strip()))
 def ok(v): return bool(v) and not v.startswith('ERR')
 def first(v): return (v or '').split()[0]
@@ -38,6 +43,58 @@ def probe_pool(block, addr):
         v = cast(block,'call',addr,sig)
         if ok(v): out[key] = v.replace('\n',' | ')
     return out
+
+def _ints(v):
+    """Parse the leading integers from a cast multi-word output like '-113390 [..] | -110020 [..]'."""
+    out = []
+    for seg in (v or '').split('|'):
+        m = re.match(r'\s*(-?\d+)', seg)
+        if m: out.append(int(m.group(1)))
+    return out
+def _i24hex(n):
+    return format(n & 0xffffff, '06x')  # int24 two's-complement, 3 bytes
+def victim_pool_exposure(block, victim, pool, pl, params, roles, tok_info):
+    """How much of the pool's value the VICTIM itself can claim as an LP.
+    V2 pair: victim LP-token balance -> share of reserves (claimable token0/token1).
+    V3 pool: victim's concentrated-liquidity position (keyed by owner+tickLower+tickUpper)
+    -> live liquidity + tokensOwed0/1. Structural exposure numbers only; no attack path."""
+    lines = []
+    t0 = first(pl.get('token0','')).lower(); t1 = first(pl.get('token1','')).lower()
+    l0 = _label(t0, roles) or t0[:8]; l1 = _label(t1, roles) or t1[:8]
+    is_v3 = 'slot0' in pl
+    if not is_v3 and 'getReserves' in pl:
+        lp = cast(block,'call',pool,'balanceOf(address)(uint256)',victim)
+        ts = cast(block,'call',pool,'totalSupply()(uint256)')
+        try:
+            ilp, its = int(first(lp)), int(first(ts))
+        except Exception:
+            ilp = its = 0
+        if ilp > 0 and its > 0:
+            rs = _ints(pl.get('getReserves',''))
+            share = ilp/its
+            cl = ''
+            if len(rs) >= 2:
+                cl = f'  ~claimable {l0}={int(rs[0]*ilp//its)} {l1}={int(rs[1]*ilp//its)}'
+            lines.append(f'VICTIM LP position: holds {ilp} LP ({share*100:.4f}% of supply){cl}')
+    if is_v3:
+        # candidate (tickLower, tickUpper) ranges from victim int24-pair view getters
+        pairs = []
+        for nm, v in params:
+            iv = _ints(v)
+            if len(iv) == 2 and all(-8388608 <= x <= 8388607 for x in iv) and iv[0] < iv[1]:
+                if iv not in pairs: pairs.append(iv)
+        for tl, tu in pairs:
+            packed = '0x' + victim[2:].lower() + _i24hex(tl) + _i24hex(tu)
+            key = keccak_hex(packed)
+            if not ok(key): continue
+            pos = cast(block,'call',pool,'positions(bytes32)(uint128,uint256,uint256,uint128,uint128)',key)
+            w = _ints(pos)
+            if len(w) >= 1 and w[0] > 0:
+                owed = ''
+                if len(w) >= 5: owed = f'  tokensOwed0={w[3]} tokensOwed1={w[4]}'
+                lines.append(f'VICTIM V3 position [ticks {tl},{tu}]: liquidity={w[0]} (of pool liquidity {first(pl.get("liquidity","?"))}){owed}')
+    return lines
+
 
 def _label(addr, roles):
     a = (addr or '').lower()
@@ -164,6 +221,8 @@ def build_context(block, victim, src):
                 if r0 < 10**15: line.append('(V2 pair looks near-empty - verify before relying on it)')
             except Exception: pass
         L.append('  ' + '  '.join(line))
+        for xl in victim_pool_exposure(block, victim, a, pl, params, roles, tok_info):
+            L.append('    ' + xl)
     for a in non_pool_roles:
         nm = roles[a]
         via = f' (via {live_addrs[a]}())' if a in live_addrs else ''
