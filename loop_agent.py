@@ -624,15 +624,25 @@ contract Probe is Test {
 '''
 
 # ---------------- verified source (NEVER the DeFiHackLabs PoC) ----------------
-def load_full_source(victim):
-    r = fs.get(56, victim)
-    files = fs.files(r['SourceCode'])
-    cname = r.get('ContractName', '')
-    main = fs.main_code('\n'.join(files.values()), cname)[:48000]
-    blocks = []
-    for name, body in files.items():
-        blocks.append(f'// ===== FILE: {name} =====\n{body}')
+def load_full_source(sources):
+    # `sources` = the vulnerable-LOGIC contract(s) to READ/reason over (may differ from the
+    # victim address confirm MEASURES). Accepts a single address or a list; concatenates their
+    # verified Etherscan source. NEVER the DeFiHackLabs PoC. General, content-independent.
+    if isinstance(sources, str): sources = [sources]
+    mains, blocks, cnames = [], [], []
+    for addr in sources:
+        r = fs.get(56, addr)
+        files = fs.files(r['SourceCode'])
+        cname = r.get('ContractName', '')
+        cnames.append(cname)
+        m = fs.main_code('\n'.join(files.values()), cname)
+        mains.append((f'// ===== CONTRACT {cname} @ {addr} =====\n' if len(sources) > 1 else '') + m)
+        for name, body in files.items():
+            tag = f'{name} ({cname} @ {addr})' if len(sources) > 1 else name
+            blocks.append(f'// ===== FILE: {tag} =====\n{body}')
+    main = ('\n\n'.join(mains))[:48000]
     full = '\n\n'.join(blocks)
+    cname = ', '.join(c for c in cnames if c)
     return main, full, cname
 
 def read_source(full_lines, grep=None, rng=None):
@@ -669,10 +679,15 @@ def _parse_action(out):
     try: return json.loads(re.search(r'\{[\s\S]*\}', out).group(0))
     except Exception: return {}
 
-def one(cid, victim, block, outdir):
+def one(cid, victim, block, outdir, sources=None):
     D = Path(outdir); D.mkdir(parents=True, exist_ok=True)
     victim = csum(victim)
-    main_src, full_src, cname = load_full_source(victim)
+    # DECOUPLED targets: `sources` = contract(s) whose verified source the agent READS /
+    # reasons over (the vulnerable-logic contract); `victim` = address confirm MEASURES for
+    # asset loss. Default source == victim (common case). General, no per-case hack.
+    sources = [csum(a) for a in (sources or [victim])]
+    source_differs = [a.lower() for a in sources] != [victim.lower()]
+    main_src, full_src, cname = load_full_source(sources)
     full_lines = full_src.split('\n')
     ctx = vc.build_context(block, victim, main_src)
     (D / 'CONTEXT.txt').write_text(ctx)
@@ -719,6 +734,16 @@ def one(cid, victim, block, outdir):
     _pit_block = render_pitfalls_block(_load_pitfalls())
     if _pit_block:
         pins = pins + '\n\n' + _pit_block.rstrip('\n')
+
+    # Decoupled source/victim note: the verified source above is the vulnerable-LOGIC
+    # contract(s); confirm measures a DIFFERENT victim address. Content-independent.
+    if source_differs:
+        pins = pins + ('\n\n# SOURCE vs MEASURED-VICTIM (read this): the VERIFIED SOURCE above is '
+                       f'the vulnerable-LOGIC contract(s) {cname} at ' + ', '.join(sources)
+                       + f'. The loop MEASURES asset loss on a DIFFERENT victim address {victim} '
+                       '(where the drained value actually sits — e.g. an external LP pair). Reason '
+                       'over the logic source to find the mechanism, but your PoC must cause net '
+                       'loss at the MEASURED victim address; read its live state with inspect_state.')
 
 
     objective = (f'Prove VICTIM {victim} is exploitable by an UNPRIVILEGED attacker with a '
@@ -1012,15 +1037,15 @@ def one(cid, victim, block, outdir):
 
 
 # reuse the same TARGETS as loop.py
-from loop import TARGETS
+from loop import TARGETS, parse_target
 
 if __name__ == '__main__':
     if not os.environ.get('BSC_RPC'): print('BLOCKER: set BSC_RPC'); sys.exit(2)
     slug = lambda s: re.sub(r'\W+', '_', s)
     ids = sys.argv[1:] or list(TARGETS)
     def run_one(cid):
-        v, b = TARGETS[cid]
-        res = one(cid, v, b, f'data/loop_agent/{slug(cid)}')
+        v, b, srcs = parse_target(TARGETS[cid])
+        res = one(cid, v, b, f'data/loop_agent/{slug(cid)}', sources=srcs)
         json.dump(res, open(f'data/loop_agent/{slug(cid)}.json', 'w'), ensure_ascii=False, indent=1)
         return {k: res[k] for k in res if k != 'log'}
     os.makedirs('data/loop_agent', exist_ok=True)

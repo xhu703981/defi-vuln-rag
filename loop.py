@@ -33,15 +33,29 @@ Test rules:
 - Only call functions present in the given source. Use checksummed addresses.
 When a run_test fails to compile or reverts, that is an ordinary tool result: read the forge error, FIRST classify it in "reflect" (compile/syntax vs wrong approach vs almost-right needs fix) and name what you change, THEN submit run_test again - do not give up and do not resend the same code.'''
 
-def one(cid, victim, block, outdir):
+def one(cid, victim, block, outdir, sources=None):
     D = Path(outdir); D.mkdir(parents=True, exist_ok=True)
     victim = csum(victim)
-    r = fs.get(56, victim)
-    src = fs.main_code('\n'.join(fs.files(r['SourceCode']).values()), r['ContractName'])[:48000]
+    # DECOUPLED targets: `sources` = contract(s) whose VERIFIED source we read/reason over
+    # (the vulnerable-logic contract). `victim` = address confirm MEASURES for asset loss.
+    # Default: source == victim == addr (the common case). General, no per-case hack.
+    sources = [csum(a) for a in (sources or [victim])]
+    _blocks, _names = [], []
+    for _a in sources:
+        _r = fs.get(56, _a)
+        _blocks.append(fs.main_code('\n'.join(fs.files(_r['SourceCode']).values()), _r.get('ContractName','')))
+        _names.append(_r.get('ContractName',''))
+    src = ('\n\n'.join(_blocks))[:48000]
     ctx = vc.build_context(block, victim, src)
     (D / 'CONTEXT.txt').write_text(ctx)
     hist = (SYS % (MAX_READ, THRESH * 100, block, victim)) + '\n\nPRE-READ live on-chain context (already fetched; use read_chain only if something critical is missing):\n' + ctx + '\n\nVerified victim source:\n' + src
     refs_used = []
+    if [a.lower() for a in sources] != [victim.lower()]:
+        hist += ('\n\nNOTE: the verified source above is the vulnerable-LOGIC contract(s) '
+                 + ', '.join(f'{n} {a}' for n, a in zip(_names, sources))
+                 + f'. The loop MEASURES asset loss on a DIFFERENT victim address {victim} '
+                 '(where the drained value actually sits). Reason over the logic source; your '
+                 'PoC must cause net loss at the measured victim.')
     if USE_RAG:
         try:
             refs = idx.retrieve_refs(ctx, src, query_id=cid, k=RAG_K)
@@ -131,6 +145,17 @@ def one(cid, victim, block, outdir):
         hist += '\n[result] Unrecognized. Reply ONLY one of the two JSON tools (read_chain or run_test).'
     return {'id': cid, 'outcome': 'over_budget', 'rounds': MAXR, 'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'refs': refs_used}
 
+def parse_target(entry):
+    """Parse a TARGETS entry into (victim, block, sources).
+    Backward-compatible: (addr, block) -> victim==source==addr (common case).
+    Optional 3rd slot carries a separate vulnerable-LOGIC source: an address str or
+    a list of addresses, distinct from the victim MEASUREMENT address. General, content-
+    independent — for any case where the drained-value contract != the vulnerable-logic contract."""
+    victim, block = entry[0], entry[1]
+    src = entry[2] if len(entry) > 2 and entry[2] else victim
+    sources = [src] if isinstance(src, str) else list(src)
+    return victim, block, sources
+
 TARGETS = {
     # baseline (keep)
     '20260909_BeatXswap': ('0x1e647faadb05f2124bfccfc003edc06d1a90bf5d', 120873719 - 1),
@@ -150,7 +175,10 @@ TARGETS = {
     # contract is the PancakeV2 pair (token0=WBNB,token1=ORB; live reserves 45.318 WBNB /
     # 5.826M ORB at block 121296108). Old victim was ORBToken 0xc4d2..7d7, which holds 0
     # WBNB/0 native at the fork block -> structurally unconfirmable.
-    '20260911_ORB': ('0x64fad72e5dde70b2960497744b348fd64cb4788c', 121296108),  # ORB/WBNB PancakeV2 pair (drained)
+    # DECOUPLED: victim(measure)=drained ORB/WBNB pair; source/logic=ORB token (holds the
+    # _sellToken state-update-before-external-call + _everydayEarn spot-price vuln). The pair's
+    # own verified source is the generic PancakePair (no vuln), so we read the ORB token instead.
+    '20260911_ORB': ('0x64fad72e5dde70b2960497744b348fd64cb4788c', 121296108, '0xc4d27261c06407053cad16cb825ecc0eee7ee7d7'),  # victim=pair; source=ORB token
     '20260911_GDC': ('0xe3342358e7ccbaebdd1139ad0274c53c5b3ef822', 121253212),
     '20250519_BetaPresale': ('0x760c2aaa22220f24b9343b2a91a62dd664953853', 49951832),
     '20250427_bitdog': ('0x4bbb53252b0cee84e6824e85989ea2eddeec25f1', 48728492),
@@ -173,8 +201,8 @@ if __name__ == '__main__':
     slug = lambda s: re.sub(r'\W+', '_', s)
     ids = sys.argv[1:] or list(TARGETS)
     def run_one(cid):
-        v, b = TARGETS[cid]
-        r = one(cid, v, b, f'data/loop/{slug(cid)}')
+        v, b, srcs = parse_target(TARGETS[cid])
+        r = one(cid, v, b, f'data/loop/{slug(cid)}', sources=srcs)
         json.dump(r, open(f'data/loop/{slug(cid)}.json', 'w'), ensure_ascii=False, indent=1)
         return {k: r[k] for k in r if k != 'log'}
     with ThreadPoolExecutor(max_workers=min(4, len(ids))) as ex:
