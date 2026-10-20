@@ -41,6 +41,24 @@ drawn from (but not limited to):
 Hand the bypass attempt downstream for the CODER to actually try. Never kill a real bug at plan
 stage on a guard you only reasoned about.
 
+## STEP 2.7 — LIST EACH HYPOTHESIS'S PRECONDITIONS (MANDATORY)
+An attack ACTION (sell/withdraw/redeem/swap/burn/callback) does nothing unless the attacker has first
+reached the state that action consumes. For EVERY hypothesis you are about to propose, you MUST spell
+out — in order — the PRECONDITIONS the attacker must satisfy BEFORE the exploit action, each written as
+a concrete, codeable step with its own success check. In particular:
+  - ACQUIRE / HOLD the asset the action spends: if the chain begins by `sell`/`transfer`/`redeem`-ing
+    the victim token (or an LP/share token), the attacker must FIRST obtain a NON-ZERO balance of it
+    through a WORKING buy/mint/add-liquidity path on the real contract (name the exact function + how it
+    is funded), and you must state the post-condition to assert, e.g. `assert victim.balanceOf(attacker) > 0`.
+    Selling/transferring ZERO tokens is a no-op and will silently fail the exploit — never assume the
+    attacker already holds the token.
+  - APPROVALS / allowances the action needs (`approve(spender, amount)` before a `transferFrom`/router pull).
+  - STATE FLIPS the action depends on (a reserve/price skewed into range, a flag toggled, a position opened,
+    a flash loan taken out, oracle staged) — each with the check that confirms it took effect.
+Do NOT merge these into a vague "setup"; enumerate them as explicit ordered steps so the CODER cannot skip
+the acquisition step. If a hypothesis has no viable way to satisfy a precondition (e.g. no working buy
+path exists to obtain the token it must sell), say so — that may kill the hypothesis.
+
 ## STEP 3 — PROPOSE 3-4 STRUCTURALLY DIFFERENT HYPOTHESES
 From STEP 1 + STEP 2, propose 3-4 DISTINCT attack hypotheses that use DIFFERENT mechanisms
 (e.g. reentrancy, price/reserve manipulation, position/LP drain, mint/burn abuse, callback
@@ -55,9 +73,9 @@ Write plan.md as markdown with headings `## Entrypoint map`, `## Paradigm checkl
 `## Hypotheses`. Then, LAST, emit a fenced ```json block the loop will parse:
 ```json
 {"hypotheses":[
- {"id":"H1","class":"<vuln class>","primary":true,"entry":"<exact fn call order>","asset_flow":"<who loses what / attacker gains what>","signal":"<which victim asset drops>","guard":"<the guard observed, or empty>","bypass":"<the exact bypass mechanism + reentrancy/entrypoint logic to code, or empty>"},
- {"id":"H2","class":"<vuln class>","primary":false,"entry":"...","asset_flow":"...","signal":"...","guard":"","bypass":""}
+ {"id":"H1","class":"<vuln class>","primary":true,"entry":"<exact fn call order>","precond":"<ordered preconditions the attacker must satisfy FIRST: acquire/hold the spent token via a named working buy/mint path + the assert (balanceOf>0), any approvals, any state flips — each with its check>","asset_flow":"<who loses what / attacker gains what>","signal":"<which victim asset drops>","guard":"<the guard observed, or empty>","bypass":"<the exact bypass mechanism + reentrancy/entrypoint logic to code, or empty>"},
+ {"id":"H2","class":"<vuln class>","primary":false,"entry":"...","precond":"...","asset_flow":"...","signal":"...","guard":"","bypass":""}
 ]}
 ```
-Set `"primary":true` on EXACTLY ONE hypothesis: the guard+bypass real-chain from STEP 2.5 if one exists, otherwise your single most-likely net-drain chain. List it FIRST. For the primary (and any guarded-but-real hypothesis) you MUST fill `guard` and `bypass` with the concrete entrypoint/reentrancy logic the coder has to implement — be specific (which function re-enters which, call order, who funds what).
+Set `"primary":true` on EXACTLY ONE hypothesis: the guard+bypass real-chain from STEP 2.5 if one exists, otherwise your single most-likely net-drain chain. List it FIRST. For EVERY hypothesis you MUST fill `precond` with the concrete, ordered acquisition/approval/state-flip steps (including the exact working buy/mint path that gives the attacker a non-zero balance of any token the chain later spends, and the `balanceOf>0` assert). For the primary (and any guarded-but-real hypothesis) you MUST also fill `guard` and `bypass` with the concrete entrypoint/reentrancy logic the coder has to implement — be specific (which function re-enters which, call order, who funds what).
 Keep prose under ~500 words. Do NOT write Solidity.

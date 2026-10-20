@@ -86,6 +86,8 @@ def _hyp_text(h):
     s = (f"HYPOTHESIS {h.get('id','?')} — class={h.get('class','')}\n"
          f"entry: {h.get('entry','')}\nasset_flow: {h.get('asset_flow','')}\n"
          f"success signal: {h.get('signal','')}")
+    if (h.get('precond') or '').strip():
+        s += f"\nprecond (IMPLEMENT + ASSERT FIRST, before the attack action): {h.get('precond','')}"
     if (h.get('guard') or '').strip():
         s += f"\nguard: {h.get('guard','')}"
     if (h.get('bypass') or '').strip():

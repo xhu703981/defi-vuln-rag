@@ -16,4 +16,24 @@ Hard rules:
   re-enters which, and the named guard bypass). Do NOT skip it or silently swap in an easier branch.
   Build the TARGET hypothesis for this candidate, folding in that real-chain logic.
 
+# PRECONDITIONS FIRST — IMPLEMENT THE ACQUISITION STEP BEFORE THE ATTACK (MANDATORY)
+Each hypothesis lists `precond:` — the ordered state the attacker must reach BEFORE the exploit action.
+You MUST implement every precondition, in order, inside the test, and PROVE each one took effect with an
+inline assertion, BEFORE you call the exploit action:
+- ACQUIRE / HOLD: if the attack spends the victim token (or an LP/share token) — e.g. it `sell()`s,
+  `transfer()`s, `redeem()`s, or `burn()`s it — the attacker contract must FIRST obtain a NON-ZERO balance
+  by actually executing the real buy/mint/add-liquidity path (e.g. buy by sending BNB to the victim's
+  purchase/`receive` path, or `mint`), funded only from setUp()'s deal(). Then assert it holds the token,
+  e.g. `require(victim.balanceOf(address(attacker)) > 0, "precond: no SURGE acquired");`. NEVER call
+  `sell(0)` / transfer 0 / redeem 0 — selling or moving zero tokens is a no-op and the whole exploit
+  silently does nothing. If the naive buy path reverts or mints 0, fix the acquisition (right function,
+  right value, right order) — do not proceed to the attack with a zero balance.
+- APPROVALS: issue any `approve(spender, amount)` the attack's `transferFrom`/router pull needs.
+- STATE FLIPS: perform and assert any reserve/price skew, flag toggle, position open, or flash loan the
+  chain depends on, before the step that reads that state.
+Only after these asserts pass may testExploit perform the attack action. The acquisition prerequisite is
+the single most common reason a correctly-shaped reentrancy/exploit does nothing — do not skip it.
+These acquisition/approval/state-flip require() asserts are allowed and expected; keep the final cross-asset
+net-loss outcome to the loop's own confirmation wrapper.
+
 [[revise_block]]
