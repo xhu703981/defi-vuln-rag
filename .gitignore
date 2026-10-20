@@ -2,7 +2,12 @@
 .venv/
 __pycache__/
 *.pyc
-data/
+data/**
+!data/index/
+!data/index/**
+data/index/build.log
+data/index/build.out
+data/index/xsurge_retrieve.jsonl
 cache/
 DeFiHackLabs/
 .DS_Store

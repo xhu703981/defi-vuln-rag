@@ -1,0 +1,347 @@
+{"id": "20260929_LPBonus", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20260921_TheRedVillage", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20261006_SetProtocol", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260926_DAOstack", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20261006_SetProtocol", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20261009_BitBay", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260930_PositionManager", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20261015_KolanHook", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260921_InternetToken", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260916_Flamincome", "category": "access_control", "subclass": "permissionless_state_feeds_downstream"}
+{"id": "20260909_BeatXswap", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20260916_PrimeFinance", "category": "access_control", "subclass": "permissionless_state_feeds_downstream"}
+{"id": "20260909_EtherFiAtomicQueue", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260911_GDC", "category": "reentrancy", "subclass": "reentrancy_reward_logic"}
+{"id": "20260911_ORB", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20260908_OrderFactory", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260909_EnsoFinance", "category": "price_manipulation", "subclass": "twap_manipulation"}
+{"id": "20260907_CozyFinance", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20260907_RouterDrain", "category": "access_control", "subclass": "fake_pool_callback_drains_allowance"}
+{"id": "20260905_Reddio", "category": "access_control", "subclass": "permissionless_state_feeds_downstream"}
+{"id": "20260831_FloatProtocol", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20260831_BalancerV1BPool", "category": "precision", "subclass": "fixedpoint_share_rounding"}
+{"id": "20260905_SecuredFi", "category": "price_manipulation", "subclass": "same_block_self_trade_latch"}
+{"id": "20260828_AjnaFinance", "category": "price_manipulation", "subclass": "internal_virtual_amm_formula"}
+{"id": "20260826_EnjinCryptoItems", "category": "access_control", "subclass": "unprotected_initialization"}
+{"id": "20260809_USM", "category": "precision", "subclass": "fixedpoint_share_rounding"}
+{"id": "20260806_UnistreetLaunchpad", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20260802_MOKE", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20260624_DLMC", "category": "price_manipulation", "subclass": "internal_virtual_amm_formula"}
+{"id": "20260823_ArrakisGUNI", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20260701_edel-xstock", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20260620_OLPC", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20260627_CookFinanceIssuance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20260616_DIP", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20260617_Aztec V1", "category": "access_control", "subclass": "proof_settlement_mismatch"}
+{"id": "20260614_Aztec Connect", "category": "access_control", "subclass": "proof_settlement_mismatch"}
+{"id": "20260604_BYToken", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260529_YSDAO", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20260527_Joe Agent", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20260526_SKP Token", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20260519_ElevateFi", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20260512_SQTokenStaking", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260501_SharwaMarginTrading", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20260420_ThetanutsVaultShareRounding", "category": "price_manipulation", "subclass": "vault_share_inflation"}
+{"id": "20260412_SubQuerySettings", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260425_SingularityDynaVault", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20260407_SquidMulticallAllowanceDrain", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20260405_PerpPair", "category": "price_manipulation", "subclass": "internal_virtual_amm_formula"}
+{"id": "20211221_Visor Finance", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20260331_WhalebitOracleManipulation", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20260316_unverified", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260324_XocolatlLiquidator", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20260216_XDKRecycle", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20260215_Moonwell", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20210817_XSURGE", "category": "reentrancy", "subclass": "cross_entrypoint_unlocked_sibling"}
+{"id": "20260302_Curve LlamaLend", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20211218_Grim Finance", "category": "reentrancy", "subclass": "flashloan_reentrancy"}
+{"id": "20260120_Makina", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20211027_CreamFinance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20210509_RariCapital", "category": "reentrancy", "subclass": "cross_contract"}
+{"id": "20211130_MonoX Finance", "category": "price_manipulation", "subclass": "internal_virtual_amm_formula"}
+{"id": "20210830_Cream Finance", "category": "reentrancy", "subclass": "flashloan_reentrancy"}
+{"id": "20200419_LendfMe", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20200418_UniSwapV1", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20210607_88mph NFT", "category": "access_control", "subclass": "unprotected_initialization"}
+{"id": "20211015_Indexed Finance", "category": "price_manipulation", "subclass": "twap_manipulation"}
+{"id": "20210527_BurgerSwap", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20210804_WaultFinace", "category": "price_manipulation", "subclass": "vault_share_inflation"}
+{"id": "20181007_SpankChain", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20170719_Parity Multisig", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20210508_Value Defi", "category": "reentrancy", "subclass": "cross_contract"}
+{"id": "20221223_Defrost", "category": "reentrancy", "subclass": "flashloan_reentrancy"}
+{"id": "20221229_JAY", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20221214_FPR", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20221211_Lodestar", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221210_TIFIToken", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221210_MU&MUG", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221207_AES (Deflationary token)", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221205_BBOX", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221201_APC", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221129_MBC & ZZSH", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20221108_MEV_0ad8", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20221024_Market", "category": "reentrancy", "subclass": "read_only"}
+{"id": "20221110_DFXFinance", "category": "reentrancy", "subclass": "flashloan_reentrancy"}
+{"id": "20221025_ULME", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20221026_N00d Token", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20221014_INUKO", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221017_Uerii Token", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20221018_HPAY", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20221014_MEVBOTa47b", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20221012_ATK", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221001_BabySwap", "category": "access_control", "subclass": "permissionless_state_feeds_downstream"}
+{"id": "20221011_Templedao", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20210519_PancakeBunny", "category": "price_manipulation", "subclass": "vault_share_inflation"}
+{"id": "20221006_RES-Token", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20200618_Bancor Protocol", "category": "access_control", "subclass": "permissionless_state_feeds_downstream"}
+{"id": "20221001_Thunder Brawl", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20220928_BXH", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220923_RADT-DAO", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20220913_MevBot private tx", "category": "access_control", "subclass": "unprotected_initialization"}
+{"id": "20220928_MEVBOT", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20220908_YYDS", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221214_Nmbplatform", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220908_Ragnarok Online Invasion", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20220902_ShadowFi", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20220816_Circle", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20220906_NXUSD", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220801_Reaper Farm", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20220905_ZoomproFinance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220813_Circle", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20220807_EGD Finance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20221212_BGLD (Deflationary token)", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220713_SpaceGodzilla", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220616_InverseFinance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220710_Omni NFT", "category": "reentrancy", "subclass": "cross_contract"}
+{"id": "20220606_Discover", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220430_Rari Capital/Fei Protocol", "category": "reentrancy", "subclass": "flashloan_reentrancy"}
+{"id": "20220415_Rikkei Finance", "category": "access_control", "subclass": "permissionless_state_feeds_downstream"}
+{"id": "20220529_NOVO Protocol", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220508_Fortress Loans", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20220428_DEUS DAO", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220412_ElephantMoney", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20220326_Auctus", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20220327_Revest Finance", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20220313_Hundred Finance", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20220305_Bacon Protocol", "category": "reentrancy", "subclass": "cross_entrypoint_unlocked_sibling"}
+{"id": "20220321_OneRing Finance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20231228_CCV", "category": "precision", "subclass": "integer_division_truncation"}
+{"id": "20220313_Paraluni", "category": "reentrancy", "subclass": "flashloan_reentrancy"}
+{"id": "20220315_Agave Finance", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20231231_Channels", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20220208_Sandbox LAND", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20231228_DominoTT", "category": "precision", "subclass": "fixedpoint_share_rounding"}
+{"id": "20231216_GoodDollar", "category": "reentrancy", "subclass": "reentrancy_reward_logic"}
+{"id": "20231209_BCT", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20231216_NFTTrader", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20231211_GoodCompound", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20231217_Bob", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20231205_MAMO", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20231206_ElephantStatus", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20231130_EEE", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20231122_KyberSwap", "category": "precision", "subclass": "fixedpoint_share_rounding"}
+{"id": "20231130_CAROLProtocol", "category": "reentrancy", "subclass": "reentrancy_reward_logic"}
+{"id": "20231129_Burntbubba", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20231117_Token8633_9419", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20231112_MEVBot_0x8c2d", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20231112_MEVBot_0xa247", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20231110_Raft_fi", "category": "precision", "subclass": "donation_inflated_rate_rounding"}
+{"id": "20231111_MahaLend", "category": "precision", "subclass": "donation_inflated_rate_rounding"}
+{"id": "20231018_Hopelend", "category": "precision", "subclass": "integer_division_truncation"}
+{"id": "20231106_KR", "category": "precision", "subclass": "integer_division_truncation"}
+{"id": "20231107_MEVbot", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20231018_MicDao", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20231102_BRAND", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20231013_BelugaDex", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20231008_pSeudoEth", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20231007_StarsArena", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20231013_WiseLending", "category": "precision", "subclass": "donation_inflated_rate_rounding"}
+{"id": "20231011_BH", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20230921_CEXISWAP", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230924_KubSplit", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230926_XSDWETHpool", "category": "reentrancy", "subclass": "cross_contract"}
+{"id": "20230916_uniclyNFT", "category": "reentrancy", "subclass": "reentrancy_reward_logic"}
+{"id": "20230829_EAC", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20230907_HCT", "category": "price_manipulation", "subclass": "internal_virtual_amm_formula"}
+{"id": "20230819_BTC20", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230826_SVT", "category": "price_manipulation", "subclass": "internal_virtual_amm_formula"}
+{"id": "20230827_Balancer", "category": "precision", "subclass": "fixedpoint_share_rounding"}
+{"id": "20230911_0x0DEX", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230814_ZunamiProtocol", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20230730_Curve", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20230801_NeutraFinance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230726_Carson", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230801_LeetSwap", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230809_EarningFram", "category": "reentrancy", "subclass": "cross_contract"}
+{"id": "20230722_Conic Finance 02", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20230715_USDTStakingContract28", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230721_Conic Finance", "category": "reentrancy", "subclass": "read_only"}
+{"id": "20230711_Libertify", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20230711_RodeoFinance", "category": "price_manipulation", "subclass": "twap_manipulation"}
+{"id": "20230708_Civfund", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230704_BambooIA", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230708_CIVNFT", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230710_ArcadiaFi", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20230628_Themis", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230615_DEPUSDT_LEVUSDC", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230617_MidasCapitalXYZ", "category": "precision", "subclass": "fixedpoint_share_rounding"}
+{"id": "20230606_UN", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20230607_CompounderFinance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230612_Sturdy Finance", "category": "reentrancy", "subclass": "read_only"}
+{"id": "20230611_SellToken04", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230606_VINU", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20230531_ERC20TokenBank", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230529_Jimbo", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230512_LW", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230524_Local Trade LCT", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230405_Sentiment", "category": "reentrancy", "subclass": "read_only"}
+{"id": "20230506_Melo", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230503_NeverFall", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230513_SellToken02", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230415_HundredFinance", "category": "precision", "subclass": "donation_inflated_rate_rounding"}
+{"id": "20230428_0vix", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230411_Paribus", "category": "reentrancy", "subclass": "cross_entrypoint_unlocked_sibling"}
+{"id": "20230402_Allbridge", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230328_SafeMoon Hack", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230307_Phoenix", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20230317_ParaSpace NFT", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20230227_LaunchZone", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230227_swapX", "category": "access_control", "subclass": "permissionless_state_feeds_downstream"}
+{"id": "20230203_Orion Protocol", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20230210_dForce", "category": "reentrancy", "subclass": "read_only"}
+{"id": "20230116_MidasCapital", "category": "reentrancy", "subclass": "read_only"}
+{"id": "20230202_BonqDAO", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20241210_CloberDEX", "category": "reentrancy", "subclass": "cross_entrypoint_unlocked_sibling"}
+{"id": "20230111_RoeFinance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20241126_NFTG", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20241123_Ak1111", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20241203_Pledge", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20241227_Bizness", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20230308_DKP", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20241109_X319", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20241111_DeltaPrime", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20241107_CoW", "category": "access_control", "subclass": "permissionless_state_feeds_downstream"}
+{"id": "20241022_Erc20transfer", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20241120_MainnetSettler", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20241121_Matez", "category": "precision", "subclass": "integer_division_truncation"}
+{"id": "20241013_MorphoBlue", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20241011_P719Token", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20241010_HYDT", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20241006_SASHAToken", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20241005_AIZPTToken", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20241001_FireToken", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20241002_LavaLending", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20240920_Shezmu", "category": "access_control", "subclass": "unprotected_initialization"}
+{"id": "20240913_Unverified_5697", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240918_Unverified_766a", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240828_Unverified_667d", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20230704_BaoCommunity", "category": "precision", "subclass": "donation_inflated_rate_rounding"}
+{"id": "20240912_Unverified_03f9", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240903_Penpiexyz_io", "category": "reentrancy", "subclass": "reentrancy_reward_logic"}
+{"id": "20240806_Novax", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20240828_AAVE", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20240814_YodlRouter", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20240711_GAX", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240714_Minterest", "category": "reentrancy", "subclass": "read_only"}
+{"id": "20240702_MRP", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20240529_MetaDragon", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240610_UwULend", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20240514_Sonne Finance", "category": "precision", "subclass": "integer_division_truncation"}
+{"id": "20240531_MixedSwapRouter", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240514_PredyFinance", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20240705_DeFiPlaza", "category": "precision", "subclass": "donation_inflated_rate_rounding"}
+{"id": "20240510_GFOX", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240507_SATURN", "category": "price_manipulation", "subclass": "internal_virtual_amm_formula"}
+{"id": "20240420_Rico", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20240422_Z123", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20240425_NGFS", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240412_FIL314", "category": "price_manipulation", "subclass": "internal_virtual_amm_formula"}
+{"id": "20240412_GROKD", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240412_SumerMoney", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20240325_ZongZi", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20240404_wsm", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20240323_CGT", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240223_CompoundUni", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20240329_ETHFIN", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240320_Paraswap", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240228_SMOOFSStaking", "category": "reentrancy", "subclass": "reentrancy_reward_logic"}
+{"id": "20240220_EGGX", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20240215_DualPools", "category": "precision", "subclass": "integer_division_truncation"}
+{"id": "20240219_RuggedArt", "category": "reentrancy", "subclass": "cross_entrypoint_unlocked_sibling"}
+{"id": "20240305_Woofi", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20240205_BurnsDefi", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20240211_Game", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20240213_MINER", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20240129_PeapodsFinance", "category": "reentrancy", "subclass": "flashloan_reentrancy"}
+{"id": "20240210_FILX DN404", "category": "access_control", "subclass": "unprotected_initialization"}
+{"id": "20240127_CitadelFinance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20240125_NBLGAME", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20240128_BarleyFinance", "category": "reentrancy", "subclass": "flashloan_reentrancy"}
+{"id": "20240115_Shell_MEV_0xa898", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240110_Freedom", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240122_DAO_SoulMate", "category": "access_control", "subclass": "unprotected_initialization"}
+{"id": "20240110_LQDX", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20240104_Gamma", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20240102_RadiantCapital", "category": "precision", "subclass": "integer_division_truncation"}
+{"id": "20251007_TokenHolder", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20251110_DRLVaultV3", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20251104_Moonwell", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20251103_BalancerV2", "category": "precision", "subclass": "fixedpoint_share_rounding"}
+{"id": "20250918_NGP", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20250827_0xf340", "category": "access_control", "subclass": "caller_context_bypass"}
+{"id": "20250823_ABCCApp", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250819_PresaleV5", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20250816_d3xai", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250822_Unverified_6f7a", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20250820_0x8d2e", "category": "access_control", "subclass": "unprotected_initialization"}
+{"id": "20250820_MulticallWithXera", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250815_PDZ", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250815_SizeCredit", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250813_YuliAI", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20250705_Unverified", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250721_BoJLeverageMarket", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250716_StrategyLlamaLendConvex", "category": "price_manipulation", "subclass": "vault_share_inflation"}
+{"id": "20250629_Stead", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250628_InitcodeFactoryFees", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250728_SuperRare", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250626_ResupplyFi", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20250625_Unverified_b5cb", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250620_HoldSafe", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250709_GMX", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250619_BasePricePool", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250623_GradientMakerPool", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250615_FixedTokenBSwap", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250609_BitCrown", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250528_Corkprotocol", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250615_WaleCoin", "category": "access_control", "subclass": "unprotected_initialization"}
+{"id": "20250531_DogeAlliance", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20250610_Unverified_8490", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250528_Unverified_91a1", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250625_SiloFinance", "category": "access_control", "subclass": "arbitrary_external_call"}
+{"id": "20250525_Unverified_0000", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250519_BetaPresale", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250427_bitdog", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250426_Lifeprotocol", "category": "price_manipulation", "subclass": "internal_virtual_amm_formula"}
+{"id": "20250524_RICE", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250511_MBUToken", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20250509_Nalakuvara_LotteryTicket50", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250426_ImpermaxV3", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250407_AmpKashi", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250411_Unverified 0x6077", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250404_AIRWA", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250316_wKeyDAO", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250307_SBR Token", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20250224_INVISTECH", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20250320_BBXToken", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250221_StepHeroNFTs", "category": "reentrancy", "subclass": "token_hook_callback"}
+{"id": "20250222_Unverified_35bc", "category": "reentrancy", "subclass": "classic_single_fn_cei"}
+{"id": "20250211_LimitOrderProtocol", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250211_Scorch", "category": "price_manipulation", "subclass": "direct_reserve_no_flashloan"}
+{"id": "20250208_Peapods Finance", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250121_Ast", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
+{"id": "20250208_GMT7", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250108_HORS", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250104_98Token", "category": "access_control", "subclass": "missing_permission_check"}
+{"id": "20250118_Paribus", "category": "price_manipulation", "subclass": "stale_faulty_oracle"}
+{"id": "20250111_RoulettePotV2", "category": "price_manipulation", "subclass": "governance_oracle_swap"}
+{"id": "20250101_LAURAToken", "category": "price_manipulation", "subclass": "amm_spot_flashloan"}
