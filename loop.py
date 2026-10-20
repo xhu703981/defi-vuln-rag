@@ -140,7 +140,17 @@ TARGETS = {
     # expanded BSC batch — victim+block from PoC KeyInfo only (never fed to model)
     '20260930_PositionManager': ('0x7cedb2e5d7791c7d46c5c9d35eac4775bc887f00', 124829768),
     '20260929_LPBonus': ('0x52272524a22f941f5489c1233732797314bb054b', 124759920),  # was MSN token; fix to LPBonus vuln contract
-    '20260911_ORB': ('0xc4d27261c06407053cad16cb825ecc0eee7ee7d7', 121296108),
+    # VICTIM-SELECTION RULE (uniform, metadata-only): victim = the contract DeFiHackLabs
+    # KeyInfo/post-mortem states was DRAINED of funds. When the drained value lives in an
+    # external LP pair / LP holders (not the token contract's own balance), point victim at
+    # that pair. confirm.py tracks native+WBNB+USDT+BUSD plus victim.token0()/token1() when
+    # victim is a pair, so a pair victim's reserve loss is measured directly. NOT per-case
+    # tuning against confirm output; applied the same way to every case.
+    # ORB: KeyInfo says attacker nets ~45 WBNB = the ORB/WBNB pair's real reserve; the drained
+    # contract is the PancakeV2 pair (token0=WBNB,token1=ORB; live reserves 45.318 WBNB /
+    # 5.826M ORB at block 121296108). Old victim was ORBToken 0xc4d2..7d7, which holds 0
+    # WBNB/0 native at the fork block -> structurally unconfirmable.
+    '20260911_ORB': ('0x64fad72e5dde70b2960497744b348fd64cb4788c', 121296108),  # ORB/WBNB PancakeV2 pair (drained)
     '20260911_GDC': ('0xe3342358e7ccbaebdd1139ad0274c53c5b3ef822', 121253212),
     '20250519_BetaPresale': ('0x760c2aaa22220f24b9343b2a91a62dd664953853', 49951832),
     '20250427_bitdog': ('0x4bbb53252b0cee84e6824e85989ea2eddeec25f1', 48728492),
