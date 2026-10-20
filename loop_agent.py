@@ -282,7 +282,7 @@ CONFIRMATION (enforced by the loop, injected into your test — do not re-implem
 
 TEST RULES for rerun:
 - vm.createSelectFork("bsc", %d); VICTIM = %s (checksummed).
-- ALL deal() funding ONLY in setUp(); testExploit() must NOT call deal().
+- ALL deal() funding ONLY in setUp(); testExploit() must NOT call deal(). Funding the attacker with your OWN working capital is LEGITIMATE and expected — even a large principal, e.g. to bankroll a flash-free price-manipulation swap — so DO use capital to move price; just deal() it in setUp()/before the balance snapshot, never after. The restriction only keeps the snapshot a clean baseline; it is NOT a ban on funding an attack.
 - In testExploit: attack only, reading fees/mins/balances/prices LIVE (no hardcoded mutable constants).
 - Prefer an assert-free body (the loop wraps it); require()s that assert your own preconditions are fine and encouraged.
 - Only call functions that exist in the verified source. Use checksummed addresses.
@@ -567,7 +567,11 @@ def one(cid, victim, block, outdir):
             (D / f'try{rnd}.raw.sol').write_text(sol)
             why = bogus(sol)
             if why:
-                transcript.append(f'[result rerun] REJECTED anti-cheat: {why}')
+                _msg = f'[result rerun] REJECTED anti-cheat: {why}'
+                if 'deal(' in why:
+                    _msg += (' Move this deal() into setUp() (before the snapshot). Dealing working capital to the attacker is allowed; '
+                             'only its position after the snapshot is the problem. Do NOT abandon the attack approach - just relocate the funding.')
+                transcript.append(_msg)
                 log.append(('reject', why)); prev_failed = True; last_fail = 'anti-cheat reject'; continue
             sol2, err = inject_confirm(sol, victim)
             if err:
