@@ -315,3 +315,33 @@ price_manipulation (Jimbo, SellToken02) alongside access_control — the right d
   - PM r3 `almost-right needs fix` (poolData() returns a struct — read mainPool field), r4 `wrong approach` (callback drained 19 USDT but loot landed at the POOL, not attacker — must be msg.sender / pick a different vector).
   - XSURGE r2 `wrong approach` (equivalent buy→sell loses to 94% fees, victim net-gained — abandon the trade loop, dissect `purchase` prevBNBAmount math), r3/r4 keep pivoting off the prior failure instead of resending.
   - Behavior changed from "retry with error attached" to "classify failure → name change → try different path"; no verified flip within 4 rounds (as expected — still an attack-path reasoning gap, not a toolchain/context gap). cases.jsonl untouched; RPC/keys redacted.
+
+## Grok Build–style role split (Planner / Coder / Reflector / Final decision)
+- **What Grok Build does** (DeepWiki 4.4 + goal_planner.rs): Goal Harness orchestrates a team of
+  subagents — **Planner** (`GoalPlanner`, writes a persistent `.grok/plan.md`), **Strategist**
+  (executes the plan with tools), adversarial **Classifier/Skeptic** panel (majority-vote "done?"),
+  and **Summarizer** (final user-facing report). Plan is a markdown file on disk; a scratch root holds
+  per-attempt diffs/logs. Planner fails CLOSED; model/harness failures retry once (fail-open). We mirror
+  the *role separation* and *persistent plan file*, not the Rust harness.
+- **New loop: `loop_roles.py`** (old `loop.py` left intact). Per round:
+  Planner → Coder → `run_forge` → (verified? return) → Reflector → if `replan`, Planner re-plans with
+  the reflection; else Coder revises with prior sol+error. After MAXR rounds a **Final Decision** model
+  reviews the whole history and returns `genuinely_cannot | should_continue` (+ confidence, rationale,
+  next_strategy_hint). It does **not** auto-start a second cycle — report only, per request.
+- **Layered prompts** in `prompts/` (committed): `planner.md`, `coder.md`, `reflector.md`, `final.md`,
+  with `[[placeholder]]` substitution (avoids clashing with literal JSON braces in the templates).
+- **Models**: Planner/Reflector/Final = `deepseek/deepseek-v3.2` (cheap); Coder = `anthropic/claude-sonnet-4.5`.
+  Overridable via `PLAN_MODEL`/`CODE_MODEL`/`REFL_MODEL`/`FINAL_MODEL`. `USE_RAG=1` (Jev refs) kept, feeds the Planner.
+- **Per-case artifacts** under `data/loop/<case>/roles/` (gitignored, runtime): `plan.md` (overwritten on
+  replan), `reflect.md` (latest), `history.md` (full plan→code→forge→reflect per round), `final.md`,
+  and `tryN.raw.sol`/`tryN.sol`.
+- **Safety unchanged**: `confirm.py` verifier untouched and independent; no DeFiHackLabs PoC/README read;
+  RAG refs exclude the query case; keys/RPC redacted; `cases.jsonl` never written (md5 31f88a35… stable).
+- **Smoke — 20260930_PositionManager (MAXR=4)**: over_budget, 150s, both branches exercised —
+  round 1 Reflector `replan` (dropped equivalent-swap framing → Planner re-planned to "stale-Chainlink +
+  `reAddLiquidity()` rebalance" mechanism), rounds 2–4 `revise_code` (`almost-right needs fix`, swap
+  math / `sqrtPriceLimitX96` bugs). **Final decision: `should_continue`** (medium) — rationale: failures
+  were division-by-zero impl bugs in swap params, not an invalid path; `reAddLiquidity()` during
+  Chainlink staleness remains untested in a working exploit. next_strategy_hint: stale feed → skew pool
+  via large swap → `reAddLiquidity()` → reverse swap, with correct `sqrtPriceLimitX96`/decimals.
+  (Per request, the suggested second cycle was NOT started.)
