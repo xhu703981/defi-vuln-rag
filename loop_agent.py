@@ -55,6 +55,11 @@ GOAL_CLASSIFIER_STALL_THRESHOLD = 2          # same-fingerprint repeats before a
 GOAL_STRATEGIST_CAP_BONUS       = 3          # extra turn budget granted on a strategist fire
 GOAL_STRATEGIST_STALL_THRESHOLD = GOAL_CLASSIFIER_STALL_THRESHOLD + GOAL_STRATEGIST_CAP_BONUS
 GOAL_REVERIFY_AFTER = int(os.environ.get('GOAL_REVERIFY_AFTER', 3))  # dwell before reverify pressure
+# goal_tracker.rs:455 consecutive_not_achieved + config.rs:2277 resolve_goal_strategist_every.
+# SECOND strategist trigger: a cadence over the ALL-NotAchieved streak (ignores gap content),
+# so whack-a-mole across DIFFERENT wrong branches (never the same fingerprint twice) still fires.
+# Grok default = max(1, classifier_max_runs/2); our rerun budget stands in for the cap.
+GOAL_STRATEGIST_EVERY = int(os.environ.get('GOAL_STRATEGIST_EVERY', 0)) or max(1, MAXR // 10)
 
 # goal_strategist.rs:82 strategist_should_fire — skip-robust (>= last_fired + every, not strict %).
 def strategist_should_fire(consecutive, last_fired, every):
@@ -137,45 +142,87 @@ def render_goal_reverify_block(rounds_since_verify, refuted, threshold=GOAL_REVE
 # A SEPARATE read-only pass that reads the FULL accumulated context (every PoC .sol, every
 # -vvvv trace, plan.md, the RAG paradigm hits) and writes ONE structural 'change the HOW'
 # recommendation. It must NOT touch plan.md (PlanGuard restores it byte-for-byte).
-STRATEGIST_SYS = '''You are the Goal Strategist for a smart-contract exploit loop. The implementer has FAILED the external net-loss verifier several rounds in a row, flagging a different gap each round (whack-a-mole) and not converging. Diagnose WHY it is stuck and recommend ONE concrete STRUCTURAL change.
+# ---- strategist (goal_strategist.rs + goal_strategist_prompt.md), DECISION via Jev ----
+# A SEPARATE read-only pass fired on the verdict stream (same-fingerprint stall OR the
+# consecutive_not_achieved cadence). It must change the HOW, never the WHAT, and must NOT edit
+# plan.md (PlanGuard restores it byte-for-byte). Jev is the DECISION-MAKER here (cheap/fast,
+# like index.retrieve_refs): it SCORES each candidate structural root-cause against the full
+# accumulated failure context and we render the top pick into the advisory note. The generative
+# coder model is never used for this judgment.
+STRUCTURAL_DIAGNOSES = [
+    {'key': 'wrong_entrypoint',
+     'diag': 'Fixating on one entrypoint: the real value-leak is through a DIFFERENT unprivileged state-changing entrypoint that the attempts never exercise.',
+     'fix': 'Pivot to a DIFFERENT unlocked state-changing entrypoint (e.g. the buy/mint/purchase/claim path), not the function you keep re-hitting; drive the leak through THAT one.'},
+    {'key': 'reentrancy_wrong_target',
+     'diag': 'The re-entry is aimed at a guarded/locked function; the exploitable re-entry is into an UNLOCKED path that mutates balances/supply while the outer call is mid-flight.',
+     'fix': 'In the callback, re-enter the UNLOCKED path that changes balances/supply (often buy/mint) BEFORE the outer call settles its state (debit/burn) — not the locked transfer/sell you keep targeting.'},
+    {'key': 'missing_precondition',
+     'diag': 'A precondition (holding the spent token, an approval, or a flipped state flag) is never actually established on-chain before the attack action, so the leak step is a silent no-op.',
+     'fix': 'Establish the missing precondition FIRST — acquire a non-zero balance via the real buy/mint/add-liquidity path and assert balanceOf>0 (plus approvals/state flips, each asserted) — then the attack step in one rerun.'},
+    {'key': 'wrong_poc_shape',
+     'diag': "The PoC's shape can never express a net value-leak (selling/transferring zero, or a fair round-trip that just pays fees both ways).",
+     'fix': 'Restructure so the attacker ends holding MORE victim asset value than it paid in; nest the steps so the victim debit/burn happens while an inflated credit to the attacker is still pending.'},
+    {'key': 'fair_value_dead_end',
+     'diag': 'The chain only performs fair swaps/round-trips (paying both-side fees), which can never net-profit no matter how it is tuned.',
+     'fix': 'Abandon the fee-paying buy/sell loop entirely; find a path that moves a victim asset to the attacker WITHOUT equal payment (ordering bug, price/reserve skew, reward/supply timing).'},
+]
 
-Change the HOW, never the WHAT: do NOT touch the objective or the plan's acceptance criteria. You cannot edit any file; your only output is the note below.
-
-Diagnose the ROOT cause (usually: fixating on the wrong entrypoint/hypothesis; a precondition never actually established on-chain; or a PoC whose shape can never express the real value-leak). Recommend a SMALL, mechanical, verifiable restructure the implementer can execute one step at a time — e.g. re-enter a DIFFERENT unlocked state-changing entrypoint instead of the one it keeps hitting, or establish the missing precondition first.
-
-Output ONLY this Markdown note, nothing else:
-
-# Strategy: why the goal is stuck and how to unstick it
-
-## Diagnosis
-<1-3 sentences naming the root structural cause>
-
-## Recommended restructure
-1. <first small, mechanical, verifiable step>
-2. ...
-
-## Why this converges
-<1-2 sentences: how this makes the net-loss gap reachable>'''
+def _strategist_state(consecutive_failures, objective, plan_md, rerun_history):
+    reasons = [r for (_, _, _, r) in rerun_history][-8:]
+    last_poc = rerun_history[-1][1][-2500:] if rerun_history else ''
+    last_trace = rerun_history[-1][2][-2500:] if rerun_history else ''
+    return {
+        'objective': (objective or '')[:800],
+        'rounds_failed_in_a_row': consecutive_failures,
+        'failure_verdicts_recent': reasons,
+        'distinct_failure_classes': sorted(set(reasons)),
+        'plan': (plan_md or '')[:1500],
+        'last_poc_sol': last_poc,
+        'last_forge_trace': last_trace,
+    }
 
 def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_history):
-    """Separate read-only strategist pass over the FULL accumulated context. Returns note text or ''.
+    """Separate read-only strategist pass; Jev decides the root-cause pivot. Returns note text or ''.
     PlanGuard: snapshot plan.md bytes before, restore after (strategist must never alter the contract)."""
     plan_path = D / 'plan.md'
     plan_snapshot = plan_path.read_bytes() if plan_path.exists() else None
-    # Assemble the full context (all PoC code + all -vvvv traces + plan + RAG hits).
-    blocks = [f'ROUND: failed {consecutive_failures} verification rounds in a row.',
-              f'OBJECTIVE:\n{objective}', f'PLAN (plan.md):\n{plan_md}',
-              f'RAG PARADIGM HINTS:\n{hints}']
-    for (rn, sol, trace, reason) in rerun_history:
-        blocks.append(f'=== rerun try{rn} (verdict: {reason}) ===\nPoC .sol:\n{sol}\n\n'
-                      f'forge -vvvv trace:\n{trace}')
-    full = '\n\n'.join(blocks)
     note = ''
     try:
-        note = (gen_model(STRATEGY_MODEL, STRATEGIST_SYS + '\n\n# FULL ACCUMULATED CONTEXT\n' + full,
-                          temp=0.2) or '').strip()
-        note = re.sub(r'^```\w*\n?|```$', '', note, flags=re.M).strip()
-    except Exception as e:
+        from llm import jev
+        state = _strategist_state(consecutive_failures, objective, plan_md, rerun_history)
+        cand = list(STRUCTURAL_DIAGNOSES)
+        # RAG paradigms the loop has NOT converged on become extra candidate pivots (KEY FEATURE kept).
+        rag_lines = [ln[2:].strip() for ln in (hints or '').splitlines() if ln.strip().startswith('-')]
+        for i, ln in enumerate(rag_lines[:6]):
+            cand.append({'key': f'rag{i}',
+                         'diag': f'An available attack paradigm is being ignored: {ln}',
+                         'fix': f'Evaluate and, if the victim exposes it, pivot the exploit to this paradigm: {ln}'})
+        Q = {c['key']: {'type': 'noul', 'instructions':
+             ('Candidate structural root cause for why this exploit loop keeps FAILING the net-loss '
+              'verifier round after round without converging: "' + c['diag'] + '" '
+              'Given state (the objective, the recent failure verdicts, the last PoC and forge trace), '
+              'how strongly does THIS explain the stall and name the pivot most likely to finally reach '
+              'victim net-loss? Answer high ONLY if the traces/PoC actually show this pattern.')}
+             for c in cand}
+        ans = jev(state, Q)
+        scored = sorted(((float((ans.get(c['key']) or {}).get('noul', 0) or 0), c) for c in cand),
+                        key=lambda x: -x[0])
+        top = scored[0][1] if scored else None
+        if top:
+            runners = '; '.join(f"{c['key']}={p:.2f}" for p, c in scored[:4])
+            note = (
+                '# Strategy: why the goal is stuck and how to unstick it\n\n'
+                '## Diagnosis\n' + top['diag'] + '\n'
+                f'(Jev root-cause scores: {runners})\n\n'
+                '## Recommended restructure\n'
+                '1. ' + top['fix'] + '\n'
+                '2. Implement its PRECONDITIONS first (acquire/hold the spent token via the real '
+                'buy/mint path and assert balanceOf>0, plus any approvals/state flips, each asserted), '
+                'THEN the leak step — all in ONE rerun.\n\n'
+                '## Why this converges\n'
+                'Changing the HOW (the entrypoint / PoC shape) rather than the objective opens the '
+                'net-loss window the previous attempts, stuck cycling across wrong branches, never reached.')
+    except Exception:
         note = ''
     finally:
         # PlanGuard restore: the contract file is byte-identical regardless of this pass.
@@ -183,10 +230,7 @@ def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_his
             plan_path.write_bytes(plan_snapshot)
     if note:
         (D / 'strategy.md').write_text(note)
-    # A note with no actionable 'Recommended restructure' counts as "produced nothing" -> revoke.
-    if not note or 'recommended restructure' not in note.lower():
-        return ''
-    return note
+    return note or ''
 
 
 SYS = '''You are a smart-contract exploit auditor working as ONE agent in a goal-driven loop (no teammates).
@@ -390,7 +434,7 @@ def one(cid, victim, block, outdir):
     strategy_note = ''                 # last strategist recommendation (injected next turn)
     bail_pending = None                # stop-detector label -> bail nudge next turn
     cannot_nudge = False               # GoalClassifierNudge: force a primary rerun before 'cannot'
-    fired = {'stall': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0}
+    fired = {'stall': 0, 'cadence': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0}
     budget = MAXR                      # dynamic turn budget (strategist fire adds GOAL_STRATEGIST_CAP_BONUS)
     rerun_history = []                 # (round, sol, trace, reason) — the FULL context the strategist reads
 
@@ -520,20 +564,29 @@ def one(cid, victim, block, outdir):
                 last_gap_fp = fp; stall_count = 1
             threshold = GOAL_STRATEGIST_STALL_THRESHOLD if strategist_bonus > 0 else GOAL_CLASSIFIER_STALL_THRESHOLD
             stalled = stall_count >= threshold
+            # SECOND Grok Build counter (goal_tracker.rs:455 consecutive_not_achieved +
+            # goal_strategist.rs:82 strategist_should_fire): fire on a CADENCE of the all-NotAchieved
+            # streak, independent of gap content. This is what catches whack-a-mole ACROSS different
+            # wrong branches (XSURGE alternated no-profit/no-loss, so the same-fingerprint stall never
+            # tripped). Skip-robust `>= last_fired + every` (not strict `%`).
+            cadence_fire = strategist_should_fire(consecutive_no_loss, last_strategist_fired_at, GOAL_STRATEGIST_EVERY)
+            trigger = 'stall' if stalled else ('cadence' if cadence_fire else '')
             transcript.append(f'[result rerun] forge FAILED ({last_fail}); saved try{rnd}.raw.sol. '
-                              f'[no-loss streak {consecutive_no_loss}, gap-repeat {stall_count}/{threshold}]\n'
+                              f'[no-loss streak {consecutive_no_loss}, gap-repeat {stall_count}/{threshold}, '
+                              f'strategist cadence every {GOAL_STRATEGIST_EVERY} (last fired @{last_strategist_fired_at})]\n'
                               f'--- forge -vvvv trace ---\n{trace_for_ctx}')
-            # Mode A: stall -> fire the SEPARATE strategist (claim_strategist_fire semantics).
-            # Mode A fire: stall reached (same gap-fingerprint >= threshold). claim_strategist_fire
-            # guard: never double-fire on the identical consecutive streak value.
-            if stalled and consecutive_no_loss != last_strategist_fired_at:
-                last_strategist_fired_at = consecutive_no_loss
-                strategist_bonus = GOAL_STRATEGIST_CAP_BONUS      # idempotent, raises stall threshold
-                budget += GOAL_STRATEGIST_CAP_BONUS               # budget bonus
+            # Mode A: fire the SEPARATE strategist on EITHER trigger. claim_strategist_fire guard:
+            # never double-fire on the identical consecutive streak value. The cadence trigger already
+            # implies consecutive_no_loss > last_strategist_fired_at, so the guard only constrains stall.
+            if trigger and consecutive_no_loss != last_strategist_fired_at:
+                last_strategist_fired_at = consecutive_no_loss    # claim_strategist_fire
+                if strategist_bonus == 0:                          # idempotent, not stacked (goal_tracker.rs:1125)
+                    budget += GOAL_STRATEGIST_CAP_BONUS            # budget bonus, granted once
+                strategist_bonus = GOAL_STRATEGIST_CAP_BONUS       # raises the stall threshold
                 # reset_classifier_stall_fields
                 last_gap_fp = None; stall_count = 0
-                fired['stall'] += 1
-                log.append(('strategist', f'fire@streak{consecutive_no_loss}'))
+                fired[trigger] = fired.get(trigger, 0) + 1
+                log.append(('strategist', f'fire[{trigger}]@streak{consecutive_no_loss}'))
                 note = run_strategist(D, consecutive_no_loss, objective,
                                       render_plan(plan_items), hints, rerun_history)
                 if note:
@@ -541,7 +594,9 @@ def one(cid, victim, block, outdir):
                     fired['strategist'] += 1
                 else:
                     # produced nothing -> revoke the cap bonus (goal_tracker.revoke_strategist_cap_bonus).
-                    strategist_bonus = 0; budget -= GOAL_STRATEGIST_CAP_BONUS
+                    if strategist_bonus:
+                        budget -= GOAL_STRATEGIST_CAP_BONUS
+                    strategist_bonus = 0
                     fired['strategist_empty'] += 1
                     log.append(('strategist', 'empty->revoked'))
             continue
