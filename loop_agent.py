@@ -86,6 +86,11 @@ STRATEGIST_NO_REDIRECT = os.environ.get('STRATEGIST_NO_REDIRECT', '0') != '0'
 TRACE_CHARS = int(os.environ.get('TRACE_CHARS', 9000))
 # LESSONS_K: ring-cap on the number of distinct dead-end fingerprints kept in the lessons ledger.
 LESSONS_K = int(os.environ.get('LESSONS_K', 6))
+# FORCE_RERUN_AFTER: hard anti-paralysis gate. After this many CONSECUTIVE turns with NO actual
+# rerun (rounds_since_rerun), the NEXT turn is FORCED to submit a PoC: any non-rerun action is
+# refused unexecuted until a real forge rerun is submitted. Turns reflect-spin into execution
+# feedback. 999 disables. The forced rerun counts into reruns_since_reflection (feeds RERUN_CAP).
+FORCE_RERUN_AFTER = int(os.environ.get('FORCE_RERUN_AFTER', 5))
 # ---- PART 1: PITFALL_HINTS — a STATIC, baked-in list of general PoC-ENGINEERING traps (zero exploit
 # constants, not per-case direction). Operator-overridable via the PITFALL_HINTS env: either newline
 # `tag: hint` lines or a JSON list of {tag,hint}. Rendered once as a nonce-fenced advisory block in
@@ -101,6 +106,11 @@ DEFAULT_PITFALLS = [
      'INSIDE the callback BEFORE that write lands.'},
     {'tag': 'callback-funding', 'hint': 'swap/flash callbacks must already hold the owed funds when they '
      'fire — stage that balance in setUp() BEFORE the snapshot, never mid-callback.'},
+    {'tag': 'prefunded-capital', 'hint': 'You have UNLIMITED working capital — stage large base-asset '
+     '(WBNB/BNB) and stablecoin (USDT/BUSD) balances to the attacker in setUp() BEFORE the snapshot '
+     '(deal() pre-snapshot is allowed). Do NOT write flash loans or borrow to source capital; just '
+     'swap/buy directly with the staged funds. Flash-loan orchestration is the most revert-prone step '
+     'and is unnecessary here.'},
 ]
 
 def _load_pitfalls():
@@ -774,7 +784,7 @@ def one(cid, victim, block, outdir, sources=None):
     reread_note = ''                   # CHANGE 5/6: stuck re-read block (injected next turn, consumed once)
     bail_pending = None                # stop-detector label -> bail nudge next turn
     cannot_nudge = False               # GoalClassifierNudge: force a primary rerun before 'cannot'
-    fired = {'stall': 0, 'cadence': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0, 'reread': 0, 'rerun_cap': 0}
+    fired = {'stall': 0, 'cadence': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0, 'reread': 0, 'rerun_cap': 0, 'force_rerun': 0}
     budget = MAXR                      # dynamic turn budget (strategist fire adds GOAL_STRATEGIST_CAP_BONUS)
     rerun_history = []                 # (round, sol, trace, reason) — the FULL context the strategist reads
     reruns_since_reflection = 0        # RERUN_CAP gate: real forge reruns since the last (or zero) reflection
@@ -785,6 +795,7 @@ def one(cid, victim, block, outdir, sources=None):
     while rnd < budget:
         rnd += 1
         rounds_since_rerun += 1   # +1 every turn; reset to 0 only when a rerun ACTUALLY runs
+        force_rerun_now = FORCE_RERUN_AFTER > 0 and rounds_since_rerun >= FORCE_RERUN_AFTER
         nxt = next_unchecked(plan_items)
         # Mode B bail preface (goal_support.rs GOAL_CONTINUATION_BAIL_PREFACE) — re-serve next item.
         preface = GOAL_CONTINUATION_BAIL_PREFACE if bail_pending else ''
@@ -813,6 +824,14 @@ def one(cid, victim, block, outdir, sources=None):
             nudge = '\n\n' + delivered_reread.rstrip('\n') + nudge
         if preface:
             nudge = '\n\n' + preface + nudge.lstrip('\n')
+        # Hard FORCE_RERUN gate: highest-priority, top-of-prompt interrupt. After FORCE_RERUN_AFTER
+        # turns with no actual rerun, this turn MUST submit a PoC; non-rerun actions are refused.
+        if force_rerun_now:
+            nudge = ('\n\n[FORCE-RERUN] You have gone ' + str(rounds_since_rerun) + ' turns without submitting a '
+                     'rerun. THIS TURN you MUST return a "rerun" action with your current BEST complete PoC .sol. '
+                     'Any other tool (read_source/inspect_state/probe/edit_plan) will be REFUSED unexecuted. '
+                     'The forge trace itself is the signal you need — submit your best attempt now; do not keep analyzing.'
+                     + nudge.lstrip('\n'))
         # Mode 4 GoalClassifierNudge: 'cannot' is not eligible until a real primary rerun ran.
         if cannot_nudge:
             nudge += ('\n[classifier-nudge] You signalled you cannot proceed, but you have NOT run a '
@@ -860,6 +879,15 @@ def one(cid, victim, block, outdir, sources=None):
             log.append(('bail', stop_lbl))
             transcript.append(f'[loop] premature-stop pattern "{stop_lbl}" detected — NOT terminal; continuing.')
 
+        # FORCE_RERUN gate enforcement: refuse (do NOT execute) any non-rerun action while the gate
+        # is active, and do NOT reset rounds_since_rerun — keep pressing until a real rerun lands.
+        if force_rerun_now and tool != 'rerun':
+            fired['force_rerun'] += 1
+            log.append(('force_rerun', tool or '<none>'))
+            transcript.append('[loop] FORCE-RERUN gate active — action "' + str(tool) + '" REFUSED unexecuted; '
+                              'you must submit a "rerun" PoC this turn.')
+            prev_failed = True; last_fail = 'force-rerun gate: non-rerun action refused'
+            continue
         if tool == 'read_source':
             res = read_source(full_lines, grep=act.get('grep') or act.get('query'), rng=act.get('range'))
             log.append(('read_source', (act.get('grep') or act.get('range') or '')[:80]))
