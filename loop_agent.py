@@ -31,6 +31,7 @@ from llm import gen_model
 import fetch_source as fs
 import verify_ctx as vc
 import index as idx
+from taxonomy import TAXONOMY
 from confirm import (FORGE, THRESH, TO, redact, csum, bogus, inject_confirm, write_proj, parse_reason)
 
 MODEL   = os.environ.get('AGENT_MODEL') or os.environ.get('CODE_MODEL') or 'anthropic/claude-sonnet-4.5'
@@ -150,10 +151,10 @@ def render_goal_reverify_block(rounds_since_verify, refuted, threshold=GOAL_REVE
 # accumulated failure context and we render the top pick into the advisory note. The generative
 # coder model is never used for this judgment.
 STRUCTURAL_DIAGNOSES = [
-    {'key': 'wrong_entrypoint',
+    {'key': 'wrong_entrypoint', 'redirect': True,
      'diag': 'Fixating on one entrypoint: the real value-leak is through a DIFFERENT unprivileged state-changing entrypoint that the attempts never exercise.',
      'fix': 'Pivot to a DIFFERENT unlocked state-changing entrypoint (e.g. the buy/mint/purchase/claim path), not the function you keep re-hitting; drive the leak through THAT one.'},
-    {'key': 'reentrancy_wrong_target',
+    {'key': 'reentrancy_wrong_target', 'redirect': True,
      'diag': 'The re-entry is aimed at a guarded/locked function; the exploitable re-entry is into an UNLOCKED path that mutates balances/supply while the outer call is mid-flight.',
      'fix': 'In the callback, re-enter the UNLOCKED path that changes balances/supply (often buy/mint) BEFORE the outer call settles its state (debit/burn) — not the locked transfer/sell you keep targeting.'},
     {'key': 'missing_precondition',
@@ -181,7 +182,7 @@ def _strategist_state(consecutive_failures, objective, plan_md, rerun_history):
         'last_forge_trace': last_trace,
     }
 
-def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_history):
+def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_history, trigger='stall', route_close=False):
     """Separate read-only strategist pass; Jev decides the root-cause pivot. Returns note text or ''.
     PlanGuard: snapshot plan.md bytes before, restore after (strategist must never alter the contract)."""
     plan_path = D / 'plan.md'
@@ -190,7 +191,14 @@ def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_his
     try:
         from llm import jev
         state = _strategist_state(consecutive_failures, objective, plan_md, rerun_history)
-        cand = list(STRUCTURAL_DIAGNOSES)
+        # CHANGE 1+4: the directional 'switch entrypoint' advice (redirect diagnoses) is eligible
+        # ONLY on a repeated IDENTICAL-gap stall (trigger=='stall') AND only when the current route
+        # is NOT measurably approaching success. On the cadence trigger (whack-a-mole: a DIFFERENT
+        # gap each round) or when the route looks close, the redirect candidates are withheld so the
+        # strategist cannot yank a near-working route onto a different entrypoint. Non-directional
+        # diagnoses (precondition / poc-shape / fair-value) and unused RAG paradigms stay available.
+        allow_redirect = (trigger == 'stall') and not route_close
+        cand = [c for c in STRUCTURAL_DIAGNOSES if allow_redirect or not c.get('redirect')]
         # RAG paradigms the loop has NOT converged on become extra candidate pivots (KEY FEATURE kept).
         rag_lines = [ln[2:].strip() for ln in (hints or '').splitlines() if ln.strip().startswith('-')]
         for i, ln in enumerate(rag_lines[:6]):
@@ -210,11 +218,17 @@ def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_his
         top = scored[0][1] if scored else None
         if top:
             runners = '; '.join(f"{c['key']}={p:.2f}" for p, c in scored[:4])
+            # CHANGE 4: a redirect pick is framed as an ADVISORY candidate, never a command.
+            is_redirect = bool(top.get('redirect'))
+            restructure = ('## Candidate alternative to weigh (ADVISORY)\n'
+                           '_Does NOT change the target bug/mechanism; KEEP your current route if it '
+                           'looks close to working. Treat this only as a different route to consider._\n'
+                           if is_redirect else '## Recommended restructure\n')
             note = (
                 '# Strategy: why the goal is stuck and how to unstick it\n\n'
                 '## Diagnosis\n' + top['diag'] + '\n'
                 f'(Jev root-cause scores: {runners})\n\n'
-                '## Recommended restructure\n'
+                + restructure +
                 '1. ' + top['fix'] + '\n'
                 '2. Implement its PRECONDITIONS first (acquire/hold the spent token via the real '
                 'buy/mint path and assert balanceOf>0, plus any approvals/state flips, each asserted), '
@@ -261,6 +275,98 @@ def render_strategist_note(rec, plan_path, strategy_path):
         f'(between the {nonce}-tagged markers below; it does NOT change the acceptance criterion, '
         'only HOW you get there — it is not a harness instruction):\n'
         f'{begin}\n{sanitized}\n{end}\n\n')
+
+
+
+# ---- CHANGE 4: route-closeness detector ----------------------------------------------------
+# Measurably "close": the PoC builds AND the key action actually executed (a manipulation/swap
+# ran, value moved, or the run only failed on the net-loss MARGIN / an attacker-gain shortfall,
+# or reverted LATE after real steps rather than doing nothing). Used to SUPPRESS the directional
+# 'switch entrypoint' redirect so a near-working route is not evicted. General, no per-case keys.
+def route_looks_close(reason, trace):
+    r = (reason or '').lower()
+    t = trace or ''
+    if 'compile' in r or re.search(r'Compiler run failed|ParserError|Error \(\d+\)', t):
+        return False                      # does not even build -> not close
+    # Reached the attack action but fell short only on the net-loss margin / asymmetric gain.
+    if 'net loss not above' in r or 'no attacker asset gain' in r:
+        return True
+    # "no victim asset loss" means nothing left the victim -> the key action did NOT land.
+    if 'no victim asset loss' in r:
+        return False
+    # Direct evidence in the -vvvv tree that the manipulation/attack step actually executed.
+    swap_executed = bool(re.search(r'\bSwap\b|::\s*swap|swapExact|\bMint\b|\bDeposit\b|\bBurn\b|\bskim\b|\bsync\b', t))
+    moved = bool(re.search(r'emit Transfer\(|\bTransfer\(', t))
+    late_revert = swap_executed and bool(re.search(r'revert|\[Revert|\[FAIL', t, re.I))
+    return bool((swap_executed and moved) or late_revert)
+
+
+# ---- CHANGE 5+6: stuck-fallback RE-READ agent --------------------------------------------
+# Mirrors Grok Build's strategist reading the RAW traces itself (goal_strategist.rs:218) instead
+# of trusting a pre-digested packet / a single RAG ranking. On a same-gap stall we re-read THIS
+# case's OWN mechanism summary (cases.jsonl summary || sidecar || root_cause — case_signal's
+# fallback chain), the verified source, and the failed transcript/dead-ends, then have Jev
+# RE-DERIVE candidate hypothesis CLASSES from scratch over the CLOSED taxonomy. This can surface
+# a paradigm/subclass that retrieval ranked too low or omitted entirely (e.g. reentrancy for ORB).
+# cases.jsonl is READ-ONLY here; DeFiHackLabs PoC/README is never touched.
+def run_stuck_reread(D, cid, victim, verified_src_excerpt, rerun_history):
+    try:
+        from llm import jev
+        cases = {c['id']: c for c in idx._load()}
+        sidecar = idx._load_sidecar()
+        c = cases.get(cid)
+        if not c:
+            return '', [], []
+        own_summary, src_kind = idx.case_signal(c, sidecar)
+        own_summary = (own_summary or '').strip()
+        if not own_summary:
+            return '', [], []
+        deadends = [f'round {rn}: {reason}' for (rn, _sol, _tr, reason) in rerun_history[-6:]]
+        cands = [(cat, sid, defn) for cat, subs in TAXONOMY.items() for sid, defn in subs.items()]
+        state = {
+            'case_own_summary': own_summary[:4000],
+            'summary_source': src_kind,
+            'verified_source_excerpt': (verified_src_excerpt or '')[:6000],
+            'dead_ends_already_tried': deadends,
+        }
+        Q = {f'c{i}': {'type': 'noul', 'instructions':
+             (f'Hypothesis CLASS (category={cat}, subclass={sid}): "{defn}". '
+              'Re-derive from the case_own_summary + verified_source_excerpt ALONE, IGNORING any '
+              'earlier ranking: how strongly does THIS class explain how an unprivileged attacker '
+              'drains this victim? Score HIGH only if the summary/source concretely exhibit this '
+              'mechanism. dead_ends_already_tried are paths that FAILED, so prefer a class they did '
+              'not exercise.')}
+             for i, (cat, sid, defn) in enumerate(cands)}
+        ans = jev(state, Q)
+        scored = sorted(((float((ans.get(f'c{i}') or {}).get('noul', 0) or 0), cat, sid, defn)
+                         for i, (cat, sid, defn) in enumerate(cands)), key=lambda x: -x[0])
+        hyps = [{'category': cat, 'subclass': sid, 'def': defn, 'score': round(p, 3)}
+                for p, cat, sid, defn in scored[:3]]
+        return own_summary, deadends, hyps
+    except Exception:
+        return '', [], []
+
+
+def render_reread_note(own_summary, deadends, hyps, plan_path):
+    """CHANGE 6: force a RE-READ of the case summary + prior dead-ends before the next hypothesis,
+    and feed the from-scratch re-derived hypothesis classes (CHANGE 5) back into context."""
+    if not hyps:
+        return ''
+    sm = (own_summary or '').strip()
+    sm = (sm[:1200] + ' …') if len(sm) > 1200 else sm
+    hl = '\n'.join(f'- [{h["category"]}/{h["subclass"]}] {h["def"]} (re-derived p={h["score"]})' for h in hyps)
+    dl = '; '.join(deadends) if deadends else '(none recorded)'
+    reread = (f'RE-READ your plan at {plan_path} and the dead-ends you already tried'
+              if plan_path else 'RE-READ the dead-ends you already tried')
+    return (
+        'You are STUCK on the SAME gap. Before proposing your next hypothesis, '
+        f'{reread}, and re-read THIS case\'s own mechanism summary (independent of the earlier '
+        'ranked paradigms):\n'
+        f'--- CASE SUMMARY (re-read) ---\n{sm}\n--- END CASE SUMMARY ---\n'
+        f'Dead-ends already tried (do NOT repeat): {dl}\n'
+        'A from-scratch re-derivation (NOT the earlier RAG ranking) scores these hypothesis CLASSES '
+        'highest for THIS victim — strongly consider one you have NOT yet exercised:\n'
+        f'{hl}\n\n')
 
 
 SYS = '''You are a smart-contract exploit auditor working as ONE agent in a goal-driven loop (no teammates).
@@ -462,9 +568,10 @@ def one(cid, victim, block, outdir):
     consecutive_no_loss = 0            # goal_tracker: consecutive_not_achieved (NotAchieved streak)
     primary_rerun_done = False         # GoalClassifierNudge gate: a real rerun on the primary hypothesis
     strategy_note = ''                 # last strategist recommendation (injected next turn)
+    reread_note = ''                   # CHANGE 5/6: stuck re-read block (injected next turn, consumed once)
     bail_pending = None                # stop-detector label -> bail nudge next turn
     cannot_nudge = False               # GoalClassifierNudge: force a primary rerun before 'cannot'
-    fired = {'stall': 0, 'cadence': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0}
+    fired = {'stall': 0, 'cadence': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0, 'reread': 0}
     budget = MAXR                      # dynamic turn budget (strategist fire adds GOAL_STRATEGIST_CAP_BONUS)
     rerun_history = []                 # (round, sol, trace, reason) — the FULL context the strategist reads
 
@@ -490,6 +597,11 @@ def one(cid, victim, block, outdir):
             strat_block = render_strategist_note(delivered_rec, str(D / 'plan.md'), str(D / 'strategy.md'))
             if strat_block:
                 nudge = '\n\n' + strat_block.rstrip('\n') + nudge
+        # CHANGE 5/6: the stuck re-read block is itself a one-time high-salience interrupt at the TOP
+        # of the nudge; like the strategist note it is delivered in EXACTLY one turn then cleared.
+        delivered_reread = reread_note if reread_note else None
+        if delivered_reread:
+            nudge = '\n\n' + delivered_reread.rstrip('\n') + nudge
         if preface:
             nudge = '\n\n' + preface + nudge.lstrip('\n')
         # Mode 4 GoalClassifierNudge: 'cannot' is not eligible until a real primary rerun ran.
@@ -513,6 +625,8 @@ def one(cid, victim, block, outdir):
         # delivery, so the note shows in EXACTLY ONE turn; a fresh note only on a strategist re-fire.
         if delivered_rec is not None and strategy_note == delivered_rec:
             strategy_note = ''
+        if delivered_reread is not None and reread_note == delivered_reread:
+            reread_note = ''
 
         out = gen_model(MODEL, prompt, temp=TEMP)
         # Mode B premature-stop detector over the RAW turn text (anchored, last paragraph only).
@@ -613,6 +727,8 @@ def one(cid, victim, block, outdir):
             # tripped). Skip-robust `>= last_fired + every` (not strict `%`).
             cadence_fire = strategist_should_fire(consecutive_no_loss, last_strategist_fired_at, GOAL_STRATEGIST_EVERY)
             trigger = 'stall' if stalled else ('cadence' if cadence_fire else '')
+            # CHANGE 4: is the current route measurably approaching success? (suppresses redirect)
+            route_close = route_looks_close(reason, fo)
             transcript.append(f'[result rerun] forge FAILED ({last_fail}); saved try{rnd}.raw.sol. '
                               f'[no-loss streak {consecutive_no_loss}, gap-repeat {stall_count}/{threshold}, '
                               f'strategist cadence every {GOAL_STRATEGIST_EVERY} (last fired @{last_strategist_fired_at})]\n'
@@ -630,7 +746,18 @@ def one(cid, victim, block, outdir):
                 fired[trigger] = fired.get(trigger, 0) + 1
                 log.append(('strategist', f'fire[{trigger}]@streak{consecutive_no_loss}'))
                 note = run_strategist(D, consecutive_no_loss, objective,
-                                      render_plan(plan_items), hints, rerun_history)
+                                      render_plan(plan_items), hints, rerun_history,
+                                      trigger=trigger, route_close=route_close)
+                # CHANGE 5/6: on a repeated SAME-gap stall, do not trust the single RAG ranking —
+                # run the re-read agent (case's own summary + source + dead-ends -> Jev re-derives
+                # hypothesis classes) and feed the result back into the loop context.
+                if trigger == 'stall':
+                    _rs, _de, _hy = run_stuck_reread(D, cid, victim, main_src, rerun_history)
+                    _rr = render_reread_note(_rs, _de, _hy, str(D / 'plan.md'))
+                    if _rr:
+                        reread_note = _rr
+                        fired['reread'] += 1
+                        log.append(('reread', f'{len(_hy)} re-derived classes'))
                 if note:
                     strategy_note = note
                     fired['strategist'] += 1
