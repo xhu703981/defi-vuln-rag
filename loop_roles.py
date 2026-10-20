@@ -1,11 +1,13 @@
-# Grok Build-style role-split exploit loop: Planner -> Coder -> run_forge -> Reflector (-> replan),
-# then after MAXR rounds a FINAL DECISION model reviews all iterations and returns
-# genuinely_cannot | should_continue. Does NOT auto-start a second cycle (reports only).
+# Grok Build-style role-split exploit loop: Planner -> (3-4 hypotheses) -> Coder per hypothesis
+# -> run_forge -> vote by confirm net-loss -> Reflector (-> replan), then after MAXR rounds a
+# FINAL DECISION model reviews all iterations and returns genuinely_cannot | should_continue.
+# Does NOT auto-start a second cycle (reports only).
 #
-# Roles mirror Grok Build's Goal Harness (Planner writes a persistent plan.md; Strategist/Coder
-# executes it; a reviewer judges completion). Layered prompt templates live in prompts/*.md;
-# per-case runtime artifacts (plan.md, reflect.md, history.md, final.md) live under
-# data/loop/<case>/roles/.
+# Planner now (1) enumerates every entrypoint + asset flow anchored to victim holdings before
+# choosing, (2) evaluates the Jev vectorless-RAG paradigms as a case-by-case checklist, and
+# (3) emits 3-4 structurally different hypotheses. The loop writes a minimal PoC for EACH
+# hypothesis, runs each, and votes by the cross-asset net-loss result instead of riding one
+# hypothesis for 4 rounds.
 #
 # Safety: never reads DeFiHackLabs PoC/README; keys/RPC redacted; cases.jsonl never written;
 # confirm.py (verifier) untouched and independent; RAG refs exclude the query case.
@@ -19,12 +21,15 @@ import index as idx
 from confirm import (THRESH, redact, csum, bogus, inject_confirm, write_proj, run_forge, parse_reason)
 
 PLAN_MODEL   = os.environ.get('PLAN_MODEL',   'deepseek/deepseek-v3.2')      # cheap strategist
-CODE_MODEL   = os.environ.get('CODE_MODEL') or os.environ.get('CODER_MODEL') or 'openai/gpt-5.3-codex'  # stronger coder writes Solidity
+# Coder does NOT need a strong model (the bottleneck is upstream reasoning, not code volume);
+# default back to Sonnet. CODE_MODEL / CODER_MODEL env still override.
+CODE_MODEL   = os.environ.get('CODE_MODEL') or os.environ.get('CODER_MODEL') or 'anthropic/claude-sonnet-4.5'
 REFL_MODEL   = os.environ.get('REFL_MODEL',   'deepseek/deepseek-v3.2')      # cheap reflector
 FINAL_MODEL  = os.environ.get('FINAL_MODEL',  'deepseek/deepseek-v3.2')      # cheap final reviewer
 MAXR   = int(os.environ.get('MAXR', 4))
 USE_RAG = os.environ.get('USE_RAG', '1') != '0'
 RAG_K   = int(os.environ.get('RAG_K', 5))
+MAX_HYP = int(os.environ.get('MAX_HYP', 4))
 PROMPTS = Path('prompts')
 
 def _tpl(name, **kw):
@@ -33,41 +38,63 @@ def _tpl(name, **kw):
         t = t.replace('[[%s]]' % k, str(v))
     return t
 
-def _refs_block(ctx, src, cid):
+def _refs(ctx, src, cid):
+    """Return (checklist_text, used_meta). checklist_text is fed to the PLANNER as a
+    case-by-case checklist (not soft reference)."""
     if not USE_RAG:
-        return '', []
+        return '(RAG disabled)', []
     try:
         refs = idx.retrieve_refs(ctx, src, query_id=cid, k=RAG_K)
     except Exception as e:
-        return '', [{'error': f'{type(e).__name__}: {e}'}]
+        return '(RAG error: %s)' % (type(e).__name__), [{'error': f'{type(e).__name__}: {e}'}]
     if not refs:
-        return '', []
-    sec = 'SIMILAR HISTORICAL ATTACK PARADIGMS (inspiration only; NOT this contract\'s PoC):\n'
-    for r in refs:
-        sec += f"- [{r['category']}] {r['paradigm']} | {r['why']}\n"
+        return '(no paradigms retrieved)', []
+    lines = []
+    for i, r in enumerate(refs, 1):
+        lines.append(f"{i}. [{r['category']}] {r['paradigm']}  ({r['why']})")
     used = [{'id': r['id'], 'paradigm': r['paradigm'], 'score': r['score']} for r in refs]
-    return '\n\n' + sec, used
+    return '\n'.join(lines), used
 
 def _json(text):
     try: return json.loads(re.search(r'\{[\s\S]*\}', text).group(0))
     except Exception: return {}
 
-def plan_agent(base, victim, replan=None):
+def parse_hypotheses(plan):
+    """Pull the fenced ```json {"hypotheses":[...]} block the planner emits; fall back to one."""
+    hyps = []
+    for m in re.finditer(r'```json\s*([\s\S]*?)```', plan):
+        try:
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict) and isinstance(obj.get('hypotheses'), list):
+                hyps = obj['hypotheses']
+        except Exception:
+            continue
+    if not hyps:  # fallback: treat whole plan as a single hypothesis
+        return [{'id': 'H1', 'class': 'single', 'entry': '', 'asset_flow': '', 'signal': ''}]
+    return hyps[:MAX_HYP]
+
+def _hyp_text(h):
+    return (f"HYPOTHESIS {h.get('id','?')} — class={h.get('class','')}\n"
+            f"entry: {h.get('entry','')}\nasset_flow: {h.get('asset_flow','')}\n"
+            f"success signal: {h.get('signal','')}")
+
+def plan_agent(base, victim, refs_checklist, replan=None):
     rb = ''
     if replan:
-        rb = ('RE-PLAN: the previous strategy failed. The reflector said:\n'
-              f'- diagnosis: {replan.get("diagnosis","")}\n- change the strategy: {replan.get("instruction","")}\n'
-              'Pick a DIFFERENT mechanism or target; do not repeat the failed approach.')
-    prompt = _tpl('planner.md', victim=victim, replan_block=rb) + '\n\n' + base
+        rb = ('RE-PLAN: every hypothesis from the previous plan failed. The reflectors said:\n'
+              + replan + '\nPropose NEW hypotheses using entrypoint classes you have NOT tried; '
+              'do not repeat the failed mechanisms.')
+    prompt = _tpl('planner.md', victim=victim, refs_checklist=refs_checklist, replan_block=rb) + '\n\n' + base
     return gen_model(PLAN_MODEL, prompt, temp=0.3).strip()
 
-def code_agent(base, victim, block, plan, prev_sol=None, prev_err=None):
+def code_agent(base, victim, block, plan, hyp, prev_sol=None, prev_err=None):
     rb = ''
     if prev_sol:
         rb = ('REVISE: your previous test is below with its forge output. Fix per the plan; do not resend it verbatim.\n'
               f'--- previous .sol ---\n{prev_sol[:4000]}\n--- forge output tail ---\n{(prev_err or "")[-2000:]}')
     prompt = (_tpl('coder.md', victim=victim, block=block, revise_block=rb)
-              + '\n\n# STRATEGY (plan.md)\n' + plan + '\n\n# CONTEXT & SOURCE\n' + base)
+              + '\n\n# IMPLEMENT THIS ONE HYPOTHESIS\n' + _hyp_text(hyp)
+              + '\n\n# FULL STRATEGY (plan.md)\n' + plan + '\n\n# CONTEXT & SOURCE\n' + base)
     out = gen_model(CODE_MODEL, prompt, temp=0.2)
     return re.sub(r'^```\w*\n?|```$', '', out.strip(), flags=re.M)
 
@@ -81,6 +108,20 @@ def final_agent(victim, rounds, history_md):
     prompt = _tpl('final.md', victim=victim, rounds=rounds) + '\n\n# FULL ITERATION HISTORY\n' + history_md
     return _json(gen_model(FINAL_MODEL, prompt, temp=0.2))
 
+def _run_candidate(D, victim, sol, tag):
+    """Anti-cheat -> inject confirm -> write project -> forge. Returns (ok, forge_out, reason)."""
+    why = bogus(sol)
+    if why:
+        return False, f'REJECTED anti-cheat: {why}', 'anti-cheat'
+    sol2, ierr = inject_confirm(sol, victim)
+    if ierr:
+        return False, f'REJECTED inject: {ierr}', 'inject error'
+    pd = D / tag
+    pd.mkdir(parents=True, exist_ok=True)
+    write_proj(pd, sol2)
+    ok, fo = run_forge(pd)
+    return ok, fo, parse_reason(ok, fo)
+
 def one(cid, victim, block, outdir):
     D = Path(outdir); R = D / 'roles'; R.mkdir(parents=True, exist_ok=True)
     victim = csum(victim)
@@ -88,50 +129,66 @@ def one(cid, victim, block, outdir):
     src = fs.main_code('\n'.join(fs.files(r['SourceCode']).values()), r['ContractName'])[:48000]
     ctx = vc.build_context(block, victim, src)
     (D / 'CONTEXT.txt').write_text(ctx)
-    refs_sec, refs_used = _refs_block(ctx, src, cid)
-    base = ('PRE-READ live on-chain context:\n' + ctx + '\n\nVerified victim source:\n' + src + refs_sec)
+    refs_checklist, refs_used = _refs(ctx, src, cid)
+    base = ('PRE-READ live on-chain context:\n' + ctx + '\n\nVerified victim source:\n' + src)
 
     t0, hist_md, log = time.time(), [], []
-    plan = plan_agent(base, victim)
+    plan = plan_agent(base, victim, refs_checklist)
     (R / 'plan.md').write_text(plan)
-    hist_md.append(f'## Round 0 — initial plan\n{plan}')
+    hyps = parse_hypotheses(plan)
+    # per-hypothesis running state
+    st = {h['id']: {'hyp': h, 'alive': True, 'prev_sol': None, 'prev_err': None} for h in hyps}
+    hist_md.append(f'## Round 0 — initial plan ({len(hyps)} hypotheses: ' + ', '.join(st) + ')\n' + plan)
     log.append(('plan', plan[:800]))
 
-    prev_sol = prev_err = None
-    reflect = None
     for rnd in range(1, MAXR + 1):
-        sol = code_agent(base, victim, block, plan, prev_sol, prev_err)
-        (R / f'try{rnd}.raw.sol').write_text(sol)
-        why = bogus(sol)
-        if why:
-            fo = f'REJECTED anti-cheat: {why}'; ok = False
-        else:
-            sol2, ierr = inject_confirm(sol, victim)
-            if ierr:
-                fo = f'REJECTED inject: {ierr}'; ok = False
-            else:
-                (R / f'try{rnd}.sol').write_text(sol2)
-                write_proj(D, sol2)
-                ok, fo = run_forge(D)
-        log.append(('forge', fo))
-        if ok:
-            (R / 'history.md').write_text('\n\n'.join(hist_md) + f'\n\n## Round {rnd} — VERIFIED')
-            return {'id': cid, 'outcome': 'verified', 'rounds': rnd, 'sec': round(time.time()-t0),
-                    'log': log, 'nread': 0, 'refs': refs_used, 'sol': sol[:400]}
-        reason = parse_reason(ok, fo)
-        reflect = reflect_agent(plan, sol, fo)
-        (R / 'reflect.md').write_text('# round %d reflection\n```json\n%s\n```' % (rnd, json.dumps(reflect, ensure_ascii=False, indent=1)))
-        log.append(('reflect', reflect))
-        body = re.search(r'function\s+testExploit[\s\S]*?\n\s*\}', sol)
-        keyln = (body.group(0) if body else sol)[:900]
-        hist_md.append(f'## Round {rnd}\n**plan:** {plan[:400]}\n\n**test (key lines):**\n```solidity\n{keyln}\n```\n\n'
-                       f'**forge ({reason}):**\n```\n{fo[-1200:]}\n```\n\n**reflect:** {json.dumps(reflect, ensure_ascii=False)}')
-        prev_sol, prev_err = sol, fo
-        if reflect.get('action') == 'replan' and rnd < MAXR:
-            plan = plan_agent(base, victim, replan=reflect)
+        alive = [hid for hid in st if st[hid]['alive']]
+        if not alive:
+            break
+        # write + run a PoC for each surviving hypothesis in parallel, vote by net-loss result
+        results = {}
+        def work(hid):
+            s = st[hid]
+            sol = code_agent(base, victim, block, plan, s['hyp'], s['prev_sol'], s['prev_err'])
+            (R / f'try{rnd}_{hid}.raw.sol').write_text(sol)
+            ok, fo, reason = _run_candidate(D, victim, sol, f'cand_{hid}')
+            return hid, sol, ok, fo, reason
+        with ThreadPoolExecutor(max_workers=min(len(alive), MAX_HYP)) as ex:
+            for fut in as_completed([ex.submit(work, hid) for hid in alive]):
+                hid, sol, ok, fo, reason = fut.result()
+                results[hid] = (sol, ok, fo, reason)
+        # winner?
+        for hid, (sol, ok, fo, reason) in results.items():
+            if ok:
+                (R / f'try{rnd}_{hid}.sol').write_text(sol)
+                (R / 'history.md').write_text('\n\n'.join(hist_md) + f'\n\n## Round {rnd} — VERIFIED by {hid}')
+                log.append(('forge', f'{hid} VERIFIED'))
+                return {'id': cid, 'outcome': 'verified', 'rounds': rnd, 'winner': hid,
+                        'sec': round(time.time()-t0), 'log': log, 'nread': 0, 'refs': refs_used,
+                        'sol': sol[:400]}
+        # none verified: reflect per hypothesis, vote (drop replan=wrong-approach, keep revise=progress)
+        round_summ = []
+        for hid, (sol, ok, fo, reason) in results.items():
+            reflect = reflect_agent(plan, sol, fo)
+            st[hid]['reflect'] = reflect
+            st[hid]['prev_sol'], st[hid]['prev_err'] = sol, fo
+            if reflect.get('action') == 'replan':
+                st[hid]['alive'] = False   # this mechanism is wrong; stop riding it
+            body = re.search(r'function\s+testExploit[\s\S]*?\n\s*\}', sol)
+            keyln = (body.group(0) if body else sol)[:600]
+            round_summ.append(f"### {hid} [{reason}] alive={st[hid]['alive']}\n"
+                              f"```solidity\n{keyln}\n```\nreflect: {json.dumps(reflect, ensure_ascii=False)}")
+        (R / f'reflect{rnd}.md').write_text('\n\n'.join(round_summ))
+        log.append(('round', {hid: results[hid][3] for hid in results}))
+        hist_md.append(f'## Round {rnd}\n' + '\n\n'.join(round_summ))
+        # if all hypotheses are dead, re-plan a fresh set before the next round
+        if not any(st[hid]['alive'] for hid in st) and rnd < MAXR:
+            replan_note = '\n'.join(f"{hid}: {st[hid].get('reflect',{}).get('diagnosis','')}" for hid in st)
+            plan = plan_agent(base, victim, refs_checklist, replan=replan_note)
             (R / 'plan.md').write_text(plan)
-            hist_md.append(f'## Round {rnd} — RE-PLAN\n{plan}')
-            prev_sol = prev_err = None   # fresh approach: don't anchor coder to the dropped code
+            hyps = parse_hypotheses(plan)
+            st = {h['id']: {'hyp': h, 'alive': True, 'prev_sol': None, 'prev_err': None} for h in hyps}
+            hist_md.append(f'## Round {rnd} — RE-PLAN ({len(hyps)} new hypotheses)\n{plan}')
 
     history_md = '\n\n'.join(hist_md)
     (R / 'history.md').write_text(history_md)
