@@ -19,7 +19,7 @@ import index as idx
 from confirm import (THRESH, redact, csum, bogus, inject_confirm, write_proj, run_forge, parse_reason)
 
 PLAN_MODEL   = os.environ.get('PLAN_MODEL',   'deepseek/deepseek-v3.2')      # cheap strategist
-CODE_MODEL   = os.environ.get('CODE_MODEL',   'anthropic/claude-sonnet-4.5') # Claude writes Solidity
+CODE_MODEL   = os.environ.get('CODE_MODEL') or os.environ.get('CODER_MODEL') or 'openai/gpt-5.3-codex'  # stronger coder writes Solidity
 REFL_MODEL   = os.environ.get('REFL_MODEL',   'deepseek/deepseek-v3.2')      # cheap reflector
 FINAL_MODEL  = os.environ.get('FINAL_MODEL',  'deepseek/deepseek-v3.2')      # cheap final reviewer
 MAXR   = int(os.environ.get('MAXR', 4))
