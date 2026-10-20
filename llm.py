@@ -12,12 +12,27 @@ def post(url, body):
             time.sleep(2 ** i)
         except (urllib.error.URLError, TimeoutError): time.sleep(2 ** i)
     raise RuntimeError('openrouter failed')
-def gen_model(model, prompt, temp=0):  # OpenRouter chat for an explicit model id; disk-cached under data/llm/
-    key = f'{CACHE}/{hashlib.sha1((model + prompt + (f"|t{temp}" if temp else "")).encode()).hexdigest()}.json'
+def _chat(model, prefix, dynamic, temp):
+    """One OpenRouter chat call. When a static `prefix` is given and the model is an Anthropic model,
+    the prefix is sent as a separate content block with cache_control: ephemeral so the big static
+    SYS+source head (shared across a case's turns) is prompt-cached (~80%% input-cost cut on it).
+    Behavior is identical to sending `prefix + dynamic` as one string."""
+    if prefix and 'anthropic' in model:
+        content = [{'type': 'text', 'text': prefix, 'cache_control': {'type': 'ephemeral'}},
+                   {'type': 'text', 'text': dynamic}]
+    else:
+        content = (prefix or "") + dynamic
+    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': model, 'temperature': temp, 'messages': [{'role': 'user', 'content': content}]})
+    return r['choices'][0]['message']['content'], r.get('usage')
+
+def gen_model(model, prompt, temp=0, prefix=None):  # OpenRouter chat for an explicit model id; disk-cached under data/llm/
+    # Disk key hashes the FULL logical prompt (prefix+prompt) so keys match the pre-caching single-string form.
+    full = (prefix or "") + prompt
+    key = f'{CACHE}/{hashlib.sha1((model + full + (f"|t{temp}" if temp else "")).encode()).hexdigest()}.json'
     if os.path.exists(key): return json.load(open(key))['text']
     if os.environ.get('CACHE_ONLY'): raise RuntimeError('not cached (CACHE_ONLY)')
-    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': model, 'temperature': temp, 'messages': [{'role': 'user', 'content': prompt}]})
-    text = r['choices'][0]['message']['content']; json.dump({'text': text, 'usage': r.get('usage'), 'model': model}, open(key, 'w')); return text
+    text, usage = _chat(model, prefix, prompt, temp)
+    json.dump({'text': text, 'usage': usage, 'model': model}, open(key, 'w')); return text
 def gen(prompt, temp=0):
     key = lambda m: f'{CACHE}/{hashlib.sha1((m + prompt + (f"|t{temp}" if temp else "")).encode()).hexdigest()}.json'
     for m in (OLD, GEN):

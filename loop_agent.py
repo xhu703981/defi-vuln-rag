@@ -879,7 +879,10 @@ def one(cid, victim, block, outdir, sources=None):
                 tbody.append('...<older turns elided>...'); break
             tbody.append(entry)
         tbody = '\n\n'.join(reversed(tbody))
-        prompt = pins + '\n\n# TRANSCRIPT (your turns + tool results)\n' + tbody + nudge + '\n\nYour next single JSON action:'
+        # Split the static head (pins = SYS + verified source) from the per-turn dynamic tail so the
+        # head can be Anthropic prompt-cached across the case's turns. full prompt == pins + dynamic
+        # (disk-cache keys are unchanged vs the old single-string form).
+        dynamic = '\n\n# TRANSCRIPT (your turns + tool results)\n' + tbody + nudge + '\n\nYour next single JSON action:'
         # consume_strategist_note (goal.rs:1391): compare-and-clear once the directive is committed for
         # delivery, so the note shows in EXACTLY ONE turn; a fresh note only on a strategist re-fire.
         if delivered_rec is not None and strategy_note == delivered_rec:
@@ -887,7 +890,7 @@ def one(cid, victim, block, outdir, sources=None):
         if delivered_reread is not None and reread_note == delivered_reread:
             reread_note = ''
 
-        out = gen_model(MODEL, prompt, temp=TEMP)
+        out = gen_model(MODEL, dynamic, temp=TEMP, prefix=pins)
         # Mode B premature-stop detector over the RAW turn text (anchored, last paragraph only).
         stop_lbl = matched_stop_pattern(out)
         act = _parse_action(out)
