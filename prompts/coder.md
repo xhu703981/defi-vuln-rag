@@ -31,6 +31,16 @@ inline assertion, BEFORE you call the exploit action:
 - APPROVALS: issue any `approve(spender, amount)` the attack's `transferFrom`/router pull needs.
 - STATE FLIPS: perform and assert any reserve/price skew, flag toggle, position open, or flash loan the
   chain depends on, before the step that reads that state.
+# REENTRANT CALLBACK — PRESERVE THE OUTER CALL'S PRECONDITIONS (MANDATORY)
+- When you re-enter during an in-progress outer call (e.g. inside a `receive`/callback fired by the
+  victim mid-`sell`/`withdraw`), do NOT move or consume state that the still-unwound outer call will
+  need when control returns to it. Classic failure: transferring away the attacker's WHOLE token
+  balance inside the callback, so when the outer `sell()` resumes and tries to debit that balance it
+  reverts ("sender does not have this amount"). Leave intact whatever the outer frame still reads or
+  debits after the callback — preserve the preconditions of the call you re-entered during (keep enough
+  balance/allowance/reserve for it to finish). Re-enter to open a second drain, not to sabotage the
+  frame you are inside.
+
 Only after these asserts pass may testExploit perform the attack action. The acquisition prerequisite is
 the single most common reason a correctly-shaped reentrancy/exploit does nothing — do not skip it.
 These acquisition/approval/state-flip require() asserts are allowed and expected; keep the final cross-asset

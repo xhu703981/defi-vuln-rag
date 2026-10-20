@@ -77,6 +77,18 @@ def parse_hypotheses(plan):
         if h.get('primary'): return 0
         if (h.get('bypass') or '').strip(): return 1
         return 2
+    # Optional FORCE_PRIMARY: pin the real chain to a hypothesis class (e.g. cross-function
+    # reentrancy) regardless of the planner's own primary pick, so the forced chain is coded first.
+    force = (os.environ.get('FORCE_PRIMARY') or '').strip().lower()
+    if force:
+        kws = [k for k in re.split(r'[\s,]+', force) if k]
+        def _hit(h):
+            blob = ' '.join(str(h.get(f,'')) for f in ('class','entry','asset_flow','signal','bypass','guard')).lower()
+            return all(k in blob for k in kws)
+        picks = [h for h in hyps if _hit(h)]
+        if picks:
+            for h in hyps: h['primary'] = False
+            picks[0]['primary'] = True
     hyps = sorted(hyps, key=_rank)
     if hyps:
         hyps[0]['primary'] = True  # the loop treats position-0 as the real chain
