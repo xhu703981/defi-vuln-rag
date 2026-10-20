@@ -91,6 +91,9 @@ LESSONS_K = int(os.environ.get('LESSONS_K', 6))
 # refused unexecuted until a real forge rerun is submitted. Turns reflect-spin into execution
 # feedback. 999 disables. The forced rerun counts into reruns_since_reflection (feeds RERUN_CAP).
 FORCE_RERUN_AFTER = int(os.environ.get('FORCE_RERUN_AFTER', 5))
+# REJECT_STALL: same-class pre-execution rejects (anti-cheat/inject) in a row before the loop injects
+# a top-salience STRUCTURAL directive (via strategy_note). Structural, not mechanism — never fires strategist.
+REJECT_STALL = int(os.environ.get('REJECT_STALL', 2))
 # ---- PART 1: PITFALL_HINTS — a STATIC, baked-in list of general PoC-ENGINEERING traps (zero exploit
 # constants, not per-case direction). Operator-overridable via the PITFALL_HINTS env: either newline
 # `tag: hint` lines or a JSON list of {tag,hint}. Rendered once as a nonce-fenced advisory block in
@@ -557,11 +560,37 @@ CONFIRMATION (enforced by the loop, injected into your test — do not re-implem
 
 TEST RULES for rerun:
 - vm.createSelectFork("bsc", %d); VICTIM = %s (checksummed).
-- ALL deal() funding ONLY in setUp(); testExploit() must NOT call deal(). Funding the attacker with your OWN working capital is LEGITIMATE and expected — even a large principal, e.g. to bankroll a flash-free price-manipulation swap — so DO use capital to move price; just deal() it in setUp()/before the balance snapshot, never after. The restriction only keeps the snapshot a clean baseline; it is NOT a ban on funding an attack.
+- ALL deal() ONLY in setUp(), never in testExploit(). Funding the attacker with large OWN working capital (incl. to bankroll a flash-free price-manipulation swap) is legitimate — follow the SETUP SKELETON below exactly.
 - In testExploit: attack only, reading fees/mins/balances/prices LIVE (no hardcoded mutable constants).
 - Prefer an assert-free body (the loop wraps it); require()s that assert your own preconditions are fine and encouraged.
 - Only call functions that exist in the verified source. Use checksummed addresses.
 - PRECONDITIONS FIRST: if your chain spends a victim/LP/share token (sell/transfer/redeem/burn), you MUST first ACQUIRE a NON-ZERO balance via the real buy/mint/add-liquidity path and assert balanceOf>0 before the attack action — selling/moving zero is a silent no-op. Implement approvals and any reserve/price/flag state-flip, each asserted, before the step that reads them.
+
+
+SETUP SKELETON — your setUp() MUST follow this shape (fill the TODOs); testExploit() is yours:
+---
+// forge-std Test gives vm + deal(). Attacker == address(this) (+ contracts it deploys).
+address constant WBNB   = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c;
+address constant USDT   = 0x55d398326f99059fF775485246999027B3197955;
+address constant ROUTER = 0x10ED43C718714eb63d5aA57B78B54704E256024E; // PancakeSwap V2
+
+function setUp() public {
+    vm.createSelectFork("bsc", <BLOCK from the rule above>);
+    // (1) working capital = BASE + STABLES ONLY, dealt to the attacker (pre-snapshot):
+    vm.deal(address(this), 100000 ether);          // native BNB
+    deal(WBNB, address(this), 100000 ether);       // WBNB
+    deal(USDT, address(this), 10000000e18);        // USDT
+    // (2) EXOTIC / victim-side tokens: NEVER deal() them (fee-on-transfer / rebase / blacklist
+    //     => "Funding failed"/"TRANSFER_FAILED"). BUY them through the DEX with the base capital,
+    //     still inside setUp (pre-snapshot):
+    //   IERC20(WBNB).approve(ROUTER, type(uint256).max);
+    //   IPancakeRouter(ROUTER).swapExactTokensForTokensSupportingFeeOnTransferTokens(
+    //       amtIn, 0, path(WBNB,<EXOTIC>), address(this), block.timestamp);
+    // (3) approvals the attack will need (victim / router / pool), for the tokens you will spend.
+}
+// testExploit(): attack ONLY. No deal() anywhere here. Read fees/mins/reserves/prices LIVE.
+// Acquire a NON-ZERO balance of any token you will spend BEFORE spending it (preconditions first).
+---
 
 WORKFLOW: keep plan.md current with edit_plan (tick an item when done, add newly-discovered steps). Use read_source/inspect_state/probe to SEE actual state instead of guessing; a wrong guess wastes a turn. The historical ATTACK PARADIGMS below are advisory hints (NOT this contract's PoC) — evaluate case-by-case whether this victim exposes each.'''
 
@@ -788,6 +817,8 @@ def one(cid, victim, block, outdir, sources=None):
     budget = MAXR                      # dynamic turn budget (strategist fire adds GOAL_STRATEGIST_CAP_BONUS)
     rerun_history = []                 # (round, sol, trace, reason) — the FULL context the strategist reads
     reruns_since_reflection = 0        # RERUN_CAP gate: real forge reruns since the last (or zero) reflection
+    consecutive_rejects = 0            # bogus/inject pre-exec rejects in a row (reset on any REAL executed rerun)
+    last_reject_fp = None              # constant-scrubbed class of the last reject, to detect repeats
     deep_reflection_done = False       # RERUN_CAP gate: the one mandatory deep reflection has been spent
     lessons = OrderedDict()            # PART 2: fp -> {note,count,first_round,last_round}; disk mirror lessons.md
 
@@ -923,11 +954,51 @@ def one(cid, victim, block, outdir, sources=None):
                     _msg += (' Move this deal() into setUp() (before the snapshot). Dealing working capital to the attacker is allowed; '
                              'only its position after the snapshot is the problem. Do NOT abandon the attack approach - just relocate the funding.')
                 transcript.append(_msg)
-                log.append(('reject', why)); prev_failed = True; last_fail = 'anti-cheat reject'; continue
+                log.append(('reject', why)); prev_failed = True; last_fail = 'anti-cheat reject'
+                _r = why or err
+                _rfp = re.sub(r'0x[0-9a-fA-F]+|\d+', '', _r)[:60]
+                if _rfp == last_reject_fp: consecutive_rejects += 1
+                else: last_reject_fp = _rfp; consecutive_rejects = 1
+                _lfp = 'reject:' + _rfp
+                if _lfp in lessons:
+                    lessons[_lfp]['count'] += 1; lessons[_lfp]['last_round'] = rnd; lessons.move_to_end(_lfp)
+                else:
+                    lessons[_lfp] = {'note': f'Pre-exec reject: {_r[:120]} — STRUCTURAL fix needed; it never ran.',
+                                     'count': 1, 'first_round': rnd, 'last_round': rnd}
+                    while len(lessons) > LESSONS_K: lessons.popitem(last=False)
+                (D / 'lessons.md').write_text(render_lessons_md(lessons))
+                if consecutive_rejects >= REJECT_STALL:
+                    strategy_note = ('REJECTED ' + str(consecutive_rejects) + 'x in a row for the SAME reason BEFORE your test '
+                                     'ran: ' + _r[:160] + '. This is a STRUCTURAL PoC error, not a mechanism problem — do NOT '
+                                     'change the attack idea. Fix the STRUCTURE now per the SETUP SKELETON (all deal() in setUp, '
+                                     'exotic tokens via DEX, testExploit has no deal()). Resubmit a structurally-fixed PoC.')
+                    fired['reject_stall'] = fired.get('reject_stall', 0) + 1
+                    log.append(('reject_stall', _rfp)); consecutive_rejects = 0
+                continue
             sol2, err = inject_confirm(sol, victim)
             if err:
                 transcript.append(f'[result rerun] REJECTED inject: {err}')
-                log.append(('reject', err)); prev_failed = True; last_fail = 'inject reject'; continue
+                log.append(('reject', err)); prev_failed = True; last_fail = 'inject reject'
+                _r = why or err
+                _rfp = re.sub(r'0x[0-9a-fA-F]+|\d+', '', _r)[:60]
+                if _rfp == last_reject_fp: consecutive_rejects += 1
+                else: last_reject_fp = _rfp; consecutive_rejects = 1
+                _lfp = 'reject:' + _rfp
+                if _lfp in lessons:
+                    lessons[_lfp]['count'] += 1; lessons[_lfp]['last_round'] = rnd; lessons.move_to_end(_lfp)
+                else:
+                    lessons[_lfp] = {'note': f'Pre-exec reject: {_r[:120]} — STRUCTURAL fix needed; it never ran.',
+                                     'count': 1, 'first_round': rnd, 'last_round': rnd}
+                    while len(lessons) > LESSONS_K: lessons.popitem(last=False)
+                (D / 'lessons.md').write_text(render_lessons_md(lessons))
+                if consecutive_rejects >= REJECT_STALL:
+                    strategy_note = ('REJECTED ' + str(consecutive_rejects) + 'x in a row for the SAME reason BEFORE your test '
+                                     'ran: ' + _r[:160] + '. This is a STRUCTURAL PoC error, not a mechanism problem — do NOT '
+                                     'change the attack idea. Fix the STRUCTURE now per the SETUP SKELETON (all deal() in setUp, '
+                                     'exotic tokens via DEX, testExploit has no deal()). Resubmit a structurally-fixed PoC.')
+                    fired['reject_stall'] = fired.get('reject_stall', 0) + 1
+                    log.append(('reject_stall', _rfp)); consecutive_rejects = 0
+                continue
             (D / f'try{rnd}.sol').write_text(sol2)
             write_proj(D, sol2)
             ok, fo = run_forge_verbose(D)
@@ -937,6 +1008,7 @@ def one(cid, victim, block, outdir, sources=None):
             # A rerun that actually executed = a real attempt on the primary hypothesis (unlocks 'cannot').
             primary_rerun_done = True
             rounds_since_rerun = 0   # reset the anti-paralysis dwell ONLY on an actual rerun invocation
+            consecutive_rejects = 0; last_reject_fp = None   # a real execution clears the reject-stall
             trace_for_ctx = _trace_for_agent(fo)
             rerun_history.append((rnd, sol[:6000], trace_for_ctx, reason))
             reruns_since_reflection += 1   # a REAL verification attempt (RERUN_CAP gate)
