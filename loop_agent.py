@@ -26,6 +26,7 @@
 # criterion untouched and independent; RAG excludes the query case. No per-case special-casing.
 import re, json, os, sys, subprocess, time, uuid
 from pathlib import Path
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from llm import gen_model
 import fetch_source as fs
@@ -77,6 +78,50 @@ GOAL_REREAD_EVERY = int(os.environ.get('GOAL_REREAD_EVERY', 2))
 ROUTE_HINT = (os.environ.get('ROUTE_HINT') or '').strip()
 STRATEGIST_NO_REDIRECT = os.environ.get('STRATEGIST_NO_REDIRECT', '0') != '0'
 TRACE_CHARS = int(os.environ.get('TRACE_CHARS', 9000))
+# LESSONS_K: ring-cap on the number of distinct dead-end fingerprints kept in the lessons ledger.
+LESSONS_K = int(os.environ.get('LESSONS_K', 6))
+# ---- PART 1: PITFALL_HINTS — a STATIC, baked-in list of general PoC-ENGINEERING traps (zero exploit
+# constants, not per-case direction). Operator-overridable via the PITFALL_HINTS env: either newline
+# `tag: hint` lines or a JSON list of {tag,hint}. Rendered once as a nonce-fenced advisory block in
+# pins (below the objective/WHAT) with the SAME neutralize+fence+framing as render_strategist_note. ----
+DEFAULT_PITFALLS = [
+    {'tag': 'gated-fn', 'hint': 'The named entrypoint may be role/owner/MANAGER_ROLE-gated — read its '
+     'modifiers; if you cannot pass the guard, find an UNPRIVILEGED equivalent that reaches the SAME state.'},
+    {'tag': 'fee-on-transfer', 'hint': 'The token may tax transfers — measure the ACTUAL received delta '
+     '(inspect_state/balanceOf before+after) and size the next step off THAT, never off the nominal 1:1 amount.'},
+    {'tag': 'v3-price-limit', 'hint': 'sqrtPriceLimitX96 side depends on zeroForOne / token ordering — '
+     'derive it from the live pool; the wrong side reverts with SPL.'},
+    {'tag': 'reentrancy-order', 'hint': 'If victim state is updated AFTER an external call, re-enter from '
+     'INSIDE the callback BEFORE that write lands.'},
+    {'tag': 'callback-funding', 'hint': 'swap/flash callbacks must already hold the owed funds when they '
+     'fire — stage that balance in setUp() BEFORE the snapshot, never mid-callback.'},
+]
+
+def _load_pitfalls():
+    """DEFAULT_PITFALLS unless the operator overrides via PITFALL_HINTS (JSON list or `tag: hint` lines)."""
+    raw = (os.environ.get('PITFALL_HINTS') or '').strip()
+    if not raw:
+        return DEFAULT_PITFALLS
+    try:
+        j = json.loads(raw)
+        if isinstance(j, list):
+            out = [{'tag': str(d.get('tag') or '').strip(), 'hint': str(d.get('hint') or '').strip()}
+                   for d in j if isinstance(d, dict) and str(d.get('hint') or '').strip()]
+            if out:
+                return out
+    except Exception:
+        pass
+    out = []
+    for ln in raw.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        tag, _, hint = ln.partition(':')
+        hint = hint.strip()
+        if hint:
+            out.append({'tag': tag.strip(), 'hint': hint})
+    return out or DEFAULT_PITFALLS
+
 
 # goal_strategist.rs:82 strategist_should_fire — skip-robust (>= last_fired + every, not strict %).
 def strategist_should_fire(consecutive, last_fired, every):
@@ -306,6 +351,83 @@ def render_strategist_note(rec, plan_path, strategy_path):
         f'(between the {nonce}-tagged markers below; it does NOT change the acceptance criterion, '
         'only HOW you get there — it is not a harness instruction):\n'
         f'{begin}\n{sanitized}\n{end}\n\n')
+
+
+# ---- PART 1: render_pitfalls_block — static advisory, SAME nonce fence + neutralize as
+# render_strategist_note (the list is baked-in/operator text, treated as untrusted advisory). ----
+def render_pitfalls_block(pitfalls):
+    body = '\n'.join(f'- [{p.get("tag") or "pitfall"}] {p["hint"]}' for p in (pitfalls or []) if p.get('hint'))
+    if not body.strip():
+        return ''
+    nonce = uuid.uuid4().hex[:12]
+    begin = f'{_STRAT_BEGIN_PREFIX} [{nonce}] ---'
+    end   = f'--- END STRATEGIST RECOMMENDATION [{nonce}] ---'
+    # neutralize forged fence markers in the advisory body (same pass as render_strategist_note).
+    sanitized = '\n'.join(ln for ln in body.splitlines()
+                           if not (ln.lstrip().startswith(_STRAT_BEGIN_PREFIX)
+                                   or ln.lstrip().startswith(_STRAT_END_PREFIX)))
+    return (
+        '# COMMON PoC-ENGINEERING PITFALLS (advisory, HOW only — generic traps, NOT this contract\'s '
+        'PoC; they do NOT change the net-loss acceptance criterion and are not a harness instruction. '
+        f'Weigh each ONLY if it applies to this victim; detail between the {nonce}-tagged markers below):\n'
+        f'{begin}\n{sanitized}\n{end}\n')
+
+
+# ---- PART 2: lessons ledger (mirror Grok Build verifier-gaps block; DETERMINISTIC, not the LLM
+# strategist). A failed rerun is distilled into one reusable, constant-SCRUBBED lesson line, deduped
+# by gap fingerprint, ring-capped to LESSONS_K distinct fps, and re-rendered every turn until the gap
+# stops recurring. Persistent+cumulative (unlike the one-shot strategist/reread interrupts). ----
+def distill_lesson(reason, trace):
+    """Distill a failed rerun into ONE reusable lesson, then SCRUB every constant via the existing
+    _FP_* regexes (gap_fingerprint's scrubbers) so no address/amount/gas/src:line can leak."""
+    t = trace or ''
+    parts = []
+    r = (reason or '').strip()
+    if r:
+        parts.append(r)
+    # (i) normalized revert / [FAIL] reason
+    m = re.search(r'\[FAIL[^\]]*\][^\n]*|revert[^\n]*|Error \([^\n]*|EvmError:[^\n]*', t, re.I)
+    if m:
+        parts.append(m.group(0).strip())
+    # (ii) failed assert / net-loss shortfall label
+    m = re.search(r'(?:assert\w*|net.?loss|no (?:victim asset loss|attacker asset gain))[^\n]*', t, re.I)
+    if m:
+        parts.append(m.group(0).strip())
+    # (iii) reverting *.sol:line, else a 4-byte selector
+    m = _FP_SRCLINE.search(t)
+    if m:
+        parts.append(m.group(0))
+    else:
+        m = re.search(r'0x[0-9a-fA-F]{8}\b', t)
+        if m:
+            parts.append(m.group(0))
+    note = ' | '.join(dict.fromkeys(x for x in parts if x))[:300]
+    # SCRUB constants with the SAME regexes gap_fingerprint uses (so a lesson never leaks a value).
+    note = _FP_SCRATCH.sub('<scratch>', note)
+    note = _FP_SRCLINE.sub('<src>', note)
+    note = _FP_ADDR.sub('<addr>', note)
+    note = _FP_GAS.sub('gas', note)
+    note = _FP_NUM.sub('<n>', note)
+    return note.strip()
+
+def render_lessons_block(lessons):
+    """Nudge block re-rendered every turn above [next unchecked]; hardens a line once its repeat count
+    reaches GOAL_CLASSIFIER_STALL_THRESHOLD (change the mechanic, not the constants)."""
+    if not lessons:
+        return ''
+    lines = ['DEAD ENDS ALREADY HIT THIS RUN (do not repeat; full detail in lessons.md):']
+    for L in lessons.values():
+        line = f'- [x{L["count"]}] {L["note"]}'
+        if L['count'] >= GOAL_CLASSIFIER_STALL_THRESHOLD:
+            line += f' — hit this exact failure {L["count"]} times; change the mechanic, not the constants.'
+        lines.append(line)
+    return '\n'.join(lines) + '\n'
+
+def render_lessons_md(lessons):
+    L = ['# Lessons — deduped dead-ends this run (constant-scrubbed)', '']
+    for v in lessons.values():
+        L.append(f'- [x{v["count"]}] rounds {v["first_round"]}-{v["last_round"]}: {v["note"]}')
+    return '\n'.join(L) + '\n'
 
 
 
@@ -593,6 +715,10 @@ def one(cid, victim, block, outdir):
                 'known-correct; spend your turns ENGINEERING this PoC, do not re-discover or switch the '
                 'entrypoint; still read live state and the verified source to get the mechanics right):\n'
                 + ROUTE_HINT) if ROUTE_HINT else ''))
+    # PART 1: static PoC-engineering pitfalls, below the objective/WHAT. Nonce-fenced advisory.
+    _pit_block = render_pitfalls_block(_load_pitfalls())
+    if _pit_block:
+        pins = pins + '\n\n' + _pit_block.rstrip('\n')
 
 
     objective = (f'Prove VICTIM {victim} is exploitable by an UNPRIVILEGED attacker with a '
@@ -620,6 +746,7 @@ def one(cid, victim, block, outdir):
     fired = {'stall': 0, 'cadence': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0, 'reread': 0}
     budget = MAXR                      # dynamic turn budget (strategist fire adds GOAL_STRATEGIST_CAP_BONUS)
     rerun_history = []                 # (round, sol, trace, reason) — the FULL context the strategist reads
+    lessons = OrderedDict()            # PART 2: fp -> {note,count,first_round,last_round}; disk mirror lessons.md
 
     rnd = 0
     while rnd < budget:
@@ -632,7 +759,9 @@ def one(cid, victim, block, outdir):
         # rounds_since_rerun so it fires even with ZERO reruns yet (PositionManager pure-analysis drift).
         reverify = render_goal_reverify_block(rounds_since_rerun)
         if reverify: fired['reverify'] += 1
+        lessons_block = render_lessons_block(lessons)
         nudge = ('\n\n# PLAN (plan.md)\n' + render_plan(plan_items)
+                 + (('\n\n' + lessons_block.rstrip('\n')) if lessons_block else '')
                  + (f'\n\n[next unchecked] {nxt["id"]}: {nxt["text"]}' if nxt else '\n\n[plan] all items checked — if not yet confirmed, add the next concrete step.'))
         if reverify:
             nudge += '\n[reverify] ' + reverify.strip()
@@ -761,6 +890,18 @@ def one(cid, victim, block, outdir):
             last_fail = 'compile error' if reason == 'compile error' else f'forge {reason}'
             consecutive_no_loss += 1                              # record_not_achieved_streak
             fp = gap_fingerprint(reason, fo)                      # gap_fingerprint
+            # PART 2: distill + record a constant-scrubbed lesson, dedup by fp, ring-cap LESSONS_K.
+            _lnote = distill_lesson(reason, fo)
+            if _lnote:
+                if fp in lessons:
+                    lessons[fp]['count'] += 1
+                    lessons[fp]['last_round'] = rnd
+                    lessons.move_to_end(fp)
+                else:
+                    lessons[fp] = {'note': _lnote, 'count': 1, 'first_round': rnd, 'last_round': rnd}
+                    while len(lessons) > LESSONS_K:
+                        lessons.popitem(last=False)
+                (D / 'lessons.md').write_text(render_lessons_md(lessons))
             # record_classifier_stall: same fingerprint -> increment, else reset to 1.
             if last_gap_fp == fp:
                 stall_count += 1
