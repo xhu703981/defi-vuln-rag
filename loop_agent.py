@@ -61,14 +61,20 @@ GOAL_REVERIFY_AFTER = int(os.environ.get('GOAL_REVERIFY_AFTER', 3))  # dwell bef
 # so whack-a-mole across DIFFERENT wrong branches (never the same fingerprint twice) still fires.
 # Grok default = max(1, classifier_max_runs/2); our rerun budget stands in for the cap.
 GOAL_STRATEGIST_EVERY = int(os.environ.get('GOAL_STRATEGIST_EVERY', 0)) or max(1, MAXR // 10)
+# CHANGE 4 (early, skip-robust reread): the stuck-reread runs on its OWN cadence over the
+# content-agnostic consecutive-NotAchieved streak, DECOUPLED from the strategist's
+# last_strategist_fired_at (which the stall escalation pushes out to streak 5, so the strategist
+# cadence only re-arms late and the reread, when chained to it, fired only on the last turn — the
+# ORB bug). N small so the reread fires on the FIRST cadence hit; skip-robust `>= last_fired + N`.
+GOAL_REREAD_EVERY = int(os.environ.get('GOAL_REREAD_EVERY', 2))
 
 # goal_strategist.rs:82 strategist_should_fire — skip-robust (>= last_fired + every, not strict %).
 def strategist_should_fire(consecutive, last_fired, every):
     return every > 0 and consecutive >= last_fired + every
 
 # acp_session_impl/goal_support.rs:229 — GOAL_CONTINUATION_BAIL_PREFACE (verbatim intent).
-GOAL_CONTINUATION_BAIL_PREFACE = ("You appear to be stopping or handing off, but the goal is NOT "
-    "complete and todos remain. Do not end the turn here — keep working.\n\n")
+GOAL_CONTINUATION_BAIL_PREFACE = ("You have not submitted a rerun. Do not report conclusions or hand "
+    "off; produce a concrete PoC and call rerun now.\n\n")
 
 # ---- gap_fingerprint (goal_classifier.rs:995 + normalize_scratch_paths/extract_path_line_tokens) ----
 # Operates on the undecorated failure evidence: normalize the revert reason / net-loss shortfall,
@@ -106,6 +112,9 @@ _STOP_SRCS = [
     ('stopping_here',     r"^(?:stopping here|i've stopped here|i will stop|parked (?:the|this)|paused here)"),
     ('verdict_line',      r"^verdict: (?:pass|fail)\b"),
     ('check_back_later',  r"^(?:i will|i'll|will) (?:check back|re-?check|try again|retry|re-?run later)\b"),
+    ('ready_for_review',  r"^ready (?:for review|to (?:upload|merge|ship|land|submit))\b"),
+    ('need_more_info',    r"^(?:i (?:need|require)|need|requires?) (?:more|additional) (?:info|information|context|details|input)\b"),
+    ('in_summary',        r"^(?:in summary|to summari[sz]e|in conclusion)\b"),
 ]
 _STOP_RES = [(lbl, re.compile(src, re.I)) for lbl, src in _STOP_SRCS]
 # cannot-class labels: self-declared inability. Gated by GoalClassifierNudge (needs a real attempt).
@@ -127,17 +136,25 @@ def matched_stop_pattern(text):
                 return lbl
     return None
 
-# ---- dwell-escalating reverify block (goal_support.rs:476 render_goal_reverify_block) ----
-def render_goal_reverify_block(rounds_since_verify, refuted, threshold=GOAL_REVERIFY_AFTER):
-    if (not refuted) or rounds_since_verify < threshold:
+# ---- anti-paralysis reverify pressure (goal_support.rs:476 render_goal_reverify_block +
+# goal_tracker.rs:411-414 rounds_since_verify) ----
+# KEYED ON rounds_since_rerun (turns since the agent last ACTUALLY invoked the terminal verifier),
+# NOT on the NotAchieved streak. This is the anti-paralysis fix: completion is gated ONLY by a PASSing
+# rerun, so pressure must build even when ZERO reruns have happened yet (pure read_source/inspect_state
+# drift — e.g. PositionManager spending all 30 turns analyzing and never calling rerun). Gating on the
+# NotAchieved streak could never catch that case (the streak only moves on a FAILED rerun). The lead
+# hardens past 3*threshold; the live count is inlined.
+def render_goal_reverify_block(rounds_since_rerun, threshold=GOAL_REVERIFY_AFTER):
+    if rounds_since_rerun < threshold:
         return ''
-    lead = ("STOP DRIFTING — PROVE THE REMAINING NET-LOSS GAP NOW."
-            if rounds_since_verify >= threshold * 3
-            else "Re-run the exploit attempt before continuing.")
-    return (f"{lead} You have run {rounds_since_verify} rounds since the last confirmed "
-            f"net-loss. The loop evaluates completion (confirm.py net-loss) after every rerun. "
-            f"Fix the SINGLE concrete gap blocking net-loss rather than switching approaches or "
-            f"making cosmetic edits.\n\n")
+    lead = ("STOP DRIFTING — SUBMIT A rerun NOW."
+            if rounds_since_rerun >= threshold * 3
+            else "Submit a rerun before continuing — the only way to finish is to PASS rerun, not to "
+                 "keep reading.")
+    return (f"{lead} You have gone {rounds_since_rerun} turns without submitting a rerun. The loop "
+            f"evaluates completion (confirm.py net-loss) ONLY after a rerun; read_source/inspect_state/"
+            f"probe never finish the goal. Write a concrete PoC and call rerun on the SINGLE concrete "
+            f"gap blocking net-loss rather than continuing to analyze.\n\n")
 
 # ---- strategist (goal_strategist.rs + goal_strategist_prompt.md) ----
 # A SEPARATE read-only pass that reads the FULL accumulated context (every PoC .sol, every
@@ -570,6 +587,8 @@ def one(cid, victim, block, outdir):
     strategist_bonus = 0               # goal_tracker: strategist_cap_bonus (0 or GOAL_STRATEGIST_CAP_BONUS)
     last_strategist_fired_at = 0       # goal_tracker: last_strategist_fired_at
     consecutive_no_loss = 0            # goal_tracker: consecutive_not_achieved (NotAchieved streak)
+    rounds_since_rerun = 0             # goal_tracker: rounds_since_verify — turns since a rerun ACTUALLY ran
+    last_reread_fired_at = 0           # own cadence anchor for the stuck-reread (decoupled from strategist)
     primary_rerun_done = False         # GoalClassifierNudge gate: a real rerun on the primary hypothesis
     strategy_note = ''                 # last strategist recommendation (injected next turn)
     last_strategist_key = None         # last delivered strategist pivot key (claw-back 'changed class' test)
@@ -584,12 +603,13 @@ def one(cid, victim, block, outdir):
     rnd = 0
     while rnd < budget:
         rnd += 1
+        rounds_since_rerun += 1   # +1 every turn; reset to 0 only when a rerun ACTUALLY runs
         nxt = next_unchecked(plan_items)
-        refuted = consecutive_no_loss >= 1
         # Mode B bail preface (goal_support.rs GOAL_CONTINUATION_BAIL_PREFACE) — re-serve next item.
         preface = GOAL_CONTINUATION_BAIL_PREFACE if bail_pending else ''
-        # Mode 5 dwell-escalating reverify pressure (render_goal_reverify_block).
-        reverify = render_goal_reverify_block(consecutive_no_loss, refuted)
+        # Mode 5 anti-paralysis reverify pressure (render_goal_reverify_block) — keyed on
+        # rounds_since_rerun so it fires even with ZERO reruns yet (PositionManager pure-analysis drift).
+        reverify = render_goal_reverify_block(rounds_since_rerun)
         if reverify: fired['reverify'] += 1
         nudge = ('\n\n# PLAN (plan.md)\n' + render_plan(plan_items)
                  + (f'\n\n[next unchecked] {nxt["id"]}: {nxt["text"]}' if nxt else '\n\n[plan] all items checked — if not yet confirmed, add the next concrete step.'))
@@ -705,6 +725,7 @@ def one(cid, victim, block, outdir):
             log.append(('rerun', reason))
             # A rerun that actually executed = a real attempt on the primary hypothesis (unlocks 'cannot').
             primary_rerun_done = True
+            rounds_since_rerun = 0   # reset the anti-paralysis dwell ONLY on an actual rerun invocation
             trace_for_ctx = _trace_for_agent(fo)
             rerun_history.append((rnd, sol[:6000], trace_for_ctx, reason))
             if ok:
@@ -735,6 +756,28 @@ def one(cid, victim, block, outdir):
             trigger = 'stall' if stalled else ('cadence' if cadence_fire else '')
             # CHANGE 4: is the current route measurably approaching success? (suppresses redirect)
             route_close = route_looks_close(reason, fo)
+            # CHANGE 4 (early, skip-robust reread): fire the stuck-reread on its OWN cadence over the
+            # content-agnostic NotAchieved streak (consecutive_no_loss, +1 on EVERY failed rerun regardless
+            # of fingerprint, reset on confirm), DECOUPLED from the strategist's last_strategist_fired_at.
+            # The stall-strategist escalation bumps last_strategist_fired_at, so the strategist cadence only
+            # re-arms at streak 5; chaining the reread to it fired it only on the final turn (the ORB bug).
+            # Its own anchor last_reread_fired_at + a small GOAL_REREAD_EVERY => it fires on the FIRST cadence
+            # hit, early enough to be actionable. Skip-robust `>= last_fired + N` (not strict `%`).
+            reread_pivot = False
+            if strategist_should_fire(consecutive_no_loss, last_reread_fired_at, GOAL_REREAD_EVERY):
+                last_reread_fired_at = consecutive_no_loss   # claim this reread fire
+                _rs, _de, _hy = run_stuck_reread(D, cid, victim, main_src, rerun_history)
+                _rr = render_reread_note(_rs, _de, _hy, str(D / 'plan.md'))
+                if _rr:
+                    reread_note = _rr
+                    fired['reread'] += 1
+                    log.append(('reread', f'{len(_hy)} re-derived classes @streak{consecutive_no_loss}'))
+                    # a re-derived class not previously surfaced = a genuine structural pivot (disarms claw-back)
+                    for _h in _hy:
+                        _k = (_h['category'], _h['subclass'])
+                        if _k not in reread_seen_classes:
+                            reread_pivot = True
+                        reread_seen_classes.add(_k)
             transcript.append(f'[result rerun] forge FAILED ({last_fail}); saved try{rnd}.raw.sol. '
                               f'[no-loss streak {consecutive_no_loss}, gap-repeat {stall_count}/{threshold}, '
                               f'strategist cadence every {GOAL_STRATEGIST_EVERY} (last fired @{last_strategist_fired_at})]\n'
@@ -765,28 +808,10 @@ def one(cid, victim, block, outdir):
                     note, strat_key = run_strategist(D, consecutive_no_loss, objective,
                                           render_plan(plan_items), hints, rerun_history,
                                           trigger=trigger, route_close=route_close)
-                    # CHANGE 5/6 RE-WIRED: the stuck-reread (and its forced RE-READ note) is driven
-                    # off the CONTENT-AGNOSTIC consecutive-NotAchieved cadence (strategist_should_fire),
-                    # NOT the same-fingerprint stall. In whack-a-mole runs the fingerprint alternates
-                    # every round so the same-gap counter never climbs; the cadence counter does, so the
-                    # re-read now fires exactly when re-deriving hypotheses from first-hand evidence is
-                    # most needed (e.g. ORB's TRANSFER_FAILED <-> no-victim-asset-loss). The
-                    # same-fingerprint stall counter keeps driving only its own behavior (CHANGE 1's
-                    # redirect eligibility + stall threshold), untouched here.
-                    reread_pivot = False
-                    if cadence_fire:
-                        _rs, _de, _hy = run_stuck_reread(D, cid, victim, main_src, rerun_history)
-                        _rr = render_reread_note(_rs, _de, _hy, str(D / 'plan.md'))
-                        if _rr:
-                            reread_note = _rr
-                            fired['reread'] += 1
-                            log.append(('reread', f'{len(_hy)} re-derived classes'))
-                            # a re-derived class not previously surfaced = a genuine structural pivot
-                            for _h in _hy:
-                                _k = (_h['category'], _h['subclass'])
-                                if _k not in reread_seen_classes:
-                                    reread_pivot = True
-                                reread_seen_classes.add(_k)
+                    # The stuck-reread fires on its OWN decoupled cadence (above, keyed on
+                    # last_reread_fired_at), NOT chained to this strategist fire — so the stall
+                    # escalation of last_strategist_fired_at cannot starve it to the last turn.
+                    # reread_pivot was computed there and is reused here for the claw-back disarm.
                     # strategist pivot is "real" only with a note AND a changed hypothesis class.
                     strat_pivot = bool(note) and (strat_key is not None) and (strat_key != last_strategist_key)
                     if note:
