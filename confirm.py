@@ -163,6 +163,27 @@ function _loopConfirm(address _vic, address[8] memory toks, uint256 n,
 """
 
 
+def _enclosing_close(sol, pos):
+    """Index of the closing brace of the smallest contract/library whose body contains pos, else -1."""
+    best = -1
+    for m in re.finditer(r'\b(?:abstract\s+)?(?:contract|library)\b[^{};]*\{', sol):
+        depth, close = 0, -1
+        for j in range(m.end() - 1, len(sol)):
+            c = sol[j]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    close = j
+                    break
+        if close < 0:
+            continue
+        if m.end() - 1 <= pos <= close and (best < 0 or close < best):
+            best = close
+    return best
+
+
 def inject_confirm(sol, victim):
     sol = re.sub(r'^\s*import\s+.*?@openzeppelin.*?\n', '', sol, flags=re.M)
     if 'IERC20' in sol and 'interface IERC20' not in sol and 'interface IERC20{' not in sol.replace(' ', ''):
@@ -202,7 +223,13 @@ def inject_confirm(sol, victim):
         uint256[8] memory a1 = _loopSnapAttacker(toks, n);
         _loopConfirm(_v, toks, n, v0, a0, v1, a1);
     }}''')
-    idx = sol.rfind('}')
+    # Inject into the contract that holds the renamed test bodies (inherits forge-std Test, so `vm`
+    # is in scope). Appending at the file's last `}` would land inside a model-defined helper
+    # contract (e.g. FakePool) where `vm` is undeclared -> the prior vm.getNonce compile error.
+    anchor = sol.find('_loop_user_')
+    idx = _enclosing_close(sol, anchor) if anchor >= 0 else -1
+    if idx < 0:
+        idx = sol.rfind('}')
     if idx < 0:
         return sol, 'no contract end'
     sol = sol[:idx] + '\n' + confirm_helper(extras) + '\n'.join(wrappers) + '\n' + sol[idx:]
@@ -216,7 +243,10 @@ def write_proj(d, sol):
         '[rpc_endpoints]\nbsc="${BSC_RPC}"\n'
     )
     if not (d / 'lib/forge-std').exists():
-        subprocess.run([FORGE, 'install', 'foundry-rs/forge-std', '--no-git'], cwd=d, capture_output=True)
+        # Pinned forge-std: v1.17.0 provides vm.getNonce / vm.computeCreateAddress (used by injected confirm).
+        r = subprocess.run([FORGE, 'install', 'foundry-rs/forge-std@v1.17.0', '--no-git'], cwd=d, capture_output=True)
+        if not (d / 'lib/forge-std').exists():
+            subprocess.run([FORGE, 'install', 'foundry-rs/forge-std', '--no-git'], cwd=d, capture_output=True)
     (d / 'remappings.txt').write_text('forge-std/=lib/forge-std/src/\n')
     (d / 'test/Attack.t.sol').write_text(sol)
 
