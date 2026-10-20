@@ -183,11 +183,14 @@ def _strategist_state(consecutive_failures, objective, plan_md, rerun_history):
     }
 
 def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_history, trigger='stall', route_close=False):
-    """Separate read-only strategist pass; Jev decides the root-cause pivot. Returns note text or ''.
+    """Separate read-only strategist pass; Jev decides the root-cause pivot.
+    Returns (note_text_or_'', top_pivot_key_or_None) — the key lets the caller's RAII
+    bonus-guard tell a genuine pivot (new/changed hypothesis class) from a repeat/empty.
     PlanGuard: snapshot plan.md bytes before, restore after (strategist must never alter the contract)."""
     plan_path = D / 'plan.md'
     plan_snapshot = plan_path.read_bytes() if plan_path.exists() else None
     note = ''
+    top_key = None
     try:
         from llm import jev
         state = _strategist_state(consecutive_failures, objective, plan_md, rerun_history)
@@ -217,6 +220,7 @@ def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_his
                         key=lambda x: -x[0])
         top = scored[0][1] if scored else None
         if top:
+            top_key = top['key']
             runners = '; '.join(f"{c['key']}={p:.2f}" for p, c in scored[:4])
             # CHANGE 4: a redirect pick is framed as an ADVISORY candidate, never a command.
             is_redirect = bool(top.get('redirect'))
@@ -244,7 +248,7 @@ def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_his
             plan_path.write_bytes(plan_snapshot)
     if note:
         (D / 'strategy.md').write_text(note)
-    return note or ''
+    return (note or ''), top_key
 
 
 # ---- render_strategist_note (goal_support.rs:524 render_strategist_note) ----
@@ -568,6 +572,8 @@ def one(cid, victim, block, outdir):
     consecutive_no_loss = 0            # goal_tracker: consecutive_not_achieved (NotAchieved streak)
     primary_rerun_done = False         # GoalClassifierNudge gate: a real rerun on the primary hypothesis
     strategy_note = ''                 # last strategist recommendation (injected next turn)
+    last_strategist_key = None         # last delivered strategist pivot key (claw-back 'changed class' test)
+    reread_seen_classes = set()        # hypothesis classes already surfaced by the re-read agent (new-class test)
     reread_note = ''                   # CHANGE 5/6: stuck re-read block (injected next turn, consumed once)
     bail_pending = None                # stop-detector label -> bail nudge next turn
     cannot_nudge = False               # GoalClassifierNudge: force a primary rerun before 'cannot'
@@ -738,36 +744,68 @@ def one(cid, victim, block, outdir):
             # implies consecutive_no_loss > last_strategist_fired_at, so the guard only constrains stall.
             if trigger and consecutive_no_loss != last_strategist_fired_at:
                 last_strategist_fired_at = consecutive_no_loss    # claim_strategist_fire
-                if strategist_bonus == 0:                          # idempotent, not stacked (goal_tracker.rs:1125)
+                # The claim grants the cap bonus UP FRONT (idempotent, not stacked; goal_tracker.rs:1125).
+                if strategist_bonus == 0:
                     budget += GOAL_STRATEGIST_CAP_BONUS            # budget bonus, granted once
                 strategist_bonus = GOAL_STRATEGIST_CAP_BONUS       # raises the stall threshold
                 # reset_classifier_stall_fields
                 last_gap_fp = None; stall_count = 0
                 fired[trigger] = fired.get(trigger, 0) + 1
                 log.append(('strategist', f'fire[{trigger}]@streak{consecutive_no_loss}'))
-                note = run_strategist(D, consecutive_no_loss, objective,
-                                      render_plan(plan_items), hints, rerun_history,
-                                      trigger=trigger, route_close=route_close)
-                # CHANGE 5/6: on a repeated SAME-gap stall, do not trust the single RAG ranking —
-                # run the re-read agent (case's own summary + source + dead-ends -> Jev re-derives
-                # hypothesis classes) and feed the result back into the loop context.
-                if trigger == 'stall':
-                    _rs, _de, _hy = run_stuck_reread(D, cid, victim, main_src, rerun_history)
-                    _rr = render_reread_note(_rs, _de, _hy, str(D / 'plan.md'))
-                    if _rr:
-                        reread_note = _rr
-                        fired['reread'] += 1
-                        log.append(('reread', f'{len(_hy)} re-derived classes'))
-                if note:
-                    strategy_note = note
-                    fired['strategist'] += 1
-                else:
-                    # produced nothing -> revoke the cap bonus (goal_tracker.revoke_strategist_cap_bonus).
-                    if strategist_bonus:
-                        budget -= GOAL_STRATEGIST_CAP_BONUS
-                    strategist_bonus = 0
-                    fired['strategist_empty'] += 1
-                    log.append(('strategist', 'empty->revoked'))
+                # ---- TrackerDropGuard (goal_support.rs:1513 maybe_run_goal_strategist) ----
+                # The claim granted the cap bonus up front; EVERY exit path that delivers no real
+                # restructure must give it back. Armed by default (revoke on exit); disarmed ONLY
+                # on a genuine pivot — mirroring the Rust RAII guard that disarms solely on the
+                # `Advised` outcome. try/finally is the Python RAII. "Real restructure" = the
+                # strategist produced a note whose hypothesis CLASS changed vs. the last delivery,
+                # OR the re-read surfaced a hypothesis class not already tried (empty / same-as-before
+                # recommendations do NOT keep the bonus).
+                bonus_armed = True
+                try:
+                    note, strat_key = run_strategist(D, consecutive_no_loss, objective,
+                                          render_plan(plan_items), hints, rerun_history,
+                                          trigger=trigger, route_close=route_close)
+                    # CHANGE 5/6 RE-WIRED: the stuck-reread (and its forced RE-READ note) is driven
+                    # off the CONTENT-AGNOSTIC consecutive-NotAchieved cadence (strategist_should_fire),
+                    # NOT the same-fingerprint stall. In whack-a-mole runs the fingerprint alternates
+                    # every round so the same-gap counter never climbs; the cadence counter does, so the
+                    # re-read now fires exactly when re-deriving hypotheses from first-hand evidence is
+                    # most needed (e.g. ORB's TRANSFER_FAILED <-> no-victim-asset-loss). The
+                    # same-fingerprint stall counter keeps driving only its own behavior (CHANGE 1's
+                    # redirect eligibility + stall threshold), untouched here.
+                    reread_pivot = False
+                    if cadence_fire:
+                        _rs, _de, _hy = run_stuck_reread(D, cid, victim, main_src, rerun_history)
+                        _rr = render_reread_note(_rs, _de, _hy, str(D / 'plan.md'))
+                        if _rr:
+                            reread_note = _rr
+                            fired['reread'] += 1
+                            log.append(('reread', f'{len(_hy)} re-derived classes'))
+                            # a re-derived class not previously surfaced = a genuine structural pivot
+                            for _h in _hy:
+                                _k = (_h['category'], _h['subclass'])
+                                if _k not in reread_seen_classes:
+                                    reread_pivot = True
+                                reread_seen_classes.add(_k)
+                    # strategist pivot is "real" only with a note AND a changed hypothesis class.
+                    strat_pivot = bool(note) and (strat_key is not None) and (strat_key != last_strategist_key)
+                    if note:
+                        strategy_note = note
+                        fired['strategist'] += 1
+                        last_strategist_key = strat_key
+                    else:
+                        fired['strategist_empty'] += 1
+                        log.append(('strategist', 'empty'))
+                    # Disarm the claw-back ONLY on a genuine restructure (mirrors bonus_guard.disarm()).
+                    if strat_pivot or reread_pivot:
+                        bonus_armed = False
+                finally:
+                    # revoke_strategist_cap_bonus() unless a real restructure disarmed the guard.
+                    if bonus_armed:
+                        if strategist_bonus:
+                            budget -= GOAL_STRATEGIST_CAP_BONUS
+                        strategist_bonus = 0
+                        log.append(('strategist', 'no-restructure->bonus revoked'))
             continue
         if tool == 'edit_plan':
             msgs = apply_plan_ops(plan_items, act.get('ops'))
