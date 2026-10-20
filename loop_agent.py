@@ -114,6 +114,7 @@ DEFAULT_PITFALLS = [
      '(deal() pre-snapshot is allowed). Do NOT write flash loans or borrow to source capital; just '
      'swap/buy directly with the staged funds. Flash-loan orchestration is the most revert-prone step '
      'and is unnecessary here.'},
+    {'tag': 'swap-size-liquidity', 'hint': 'Before ANY swap or market-buy, read the target pool LIVE (getReserves / balanceOf) and size amountIn to a SAFE fraction (~10-30%) of the relevant reserve. Fixed or oversized amounts trigger INSUFFICIENT_LIQUIDITY, TRANSFER_FAILED, or price-limit reverts. For fee-on-transfer tokens use the ...SupportingFeeOnTransferTokens router variant and approve the exact router.'},
 ]
 
 def _load_pitfalls():
