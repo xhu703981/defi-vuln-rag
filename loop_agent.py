@@ -36,7 +36,13 @@ from taxonomy import TAXONOMY
 from confirm import (FORGE, THRESH, TO, redact, csum, bogus, inject_confirm, write_proj, parse_reason)
 
 MODEL   = os.environ.get('AGENT_MODEL') or os.environ.get('CODE_MODEL') or 'anthropic/claude-sonnet-4.5'
-MAXR    = int(os.environ.get('MAXR', 30))         # turn budget (each turn = one tool action)
+MAXR    = int(os.environ.get('MAXR', 25))         # TOTAL-turn ceiling (handle.rs max_turns analogue; each turn = one tool action)
+# RERUN_CAP (grok-build goal_classifier.rs GOAL_CLASSIFIER_MAX_RUNS_DEFAULT=10 analogue): the max
+# number of REAL forge verification reruns allowed before a mandatory deep reflection pass, kept
+# INDEPENDENT of MAXR so it bounds hard-trying without inflating the total-turn budget. On hitting
+# the cap the loop forces EXACTLY ONE deep reflection (stuck-reread + strategist); if a second full
+# cap of reruns still does not confirm, it stops with a clear reason rather than grinding to MAXR.
+RERUN_CAP = max(1, int(os.environ.get('RERUN_CAP', 10)))
 USE_RAG = os.environ.get('USE_RAG', '1') != '0'
 RAG_K   = int(os.environ.get('RAG_K', 5))
 TEMP    = float(os.environ.get('AGENT_TEMP', '0.3'))
@@ -768,9 +774,11 @@ def one(cid, victim, block, outdir, sources=None):
     reread_note = ''                   # CHANGE 5/6: stuck re-read block (injected next turn, consumed once)
     bail_pending = None                # stop-detector label -> bail nudge next turn
     cannot_nudge = False               # GoalClassifierNudge: force a primary rerun before 'cannot'
-    fired = {'stall': 0, 'cadence': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0, 'reread': 0}
+    fired = {'stall': 0, 'cadence': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0, 'reread': 0, 'rerun_cap': 0}
     budget = MAXR                      # dynamic turn budget (strategist fire adds GOAL_STRATEGIST_CAP_BONUS)
     rerun_history = []                 # (round, sol, trace, reason) — the FULL context the strategist reads
+    reruns_since_reflection = 0        # RERUN_CAP gate: real forge reruns since the last (or zero) reflection
+    deep_reflection_done = False       # RERUN_CAP gate: the one mandatory deep reflection has been spent
     lessons = OrderedDict()            # PART 2: fp -> {note,count,first_round,last_round}; disk mirror lessons.md
 
     rnd = 0
@@ -903,6 +911,7 @@ def one(cid, victim, block, outdir, sources=None):
             rounds_since_rerun = 0   # reset the anti-paralysis dwell ONLY on an actual rerun invocation
             trace_for_ctx = _trace_for_agent(fo)
             rerun_history.append((rnd, sol[:6000], trace_for_ctx, reason))
+            reruns_since_reflection += 1   # a REAL verification attempt (RERUN_CAP gate)
             if ok:
                 # Achieved: the EXTERNAL verifier accepted it. Only terminal success.
                 (D / 'VERIFIED.sol').write_text(sol)
@@ -1018,6 +1027,48 @@ def one(cid, victim, block, outdir, sources=None):
                             budget -= GOAL_STRATEGIST_CAP_BONUS
                         strategist_bonus = 0
                         log.append(('strategist', 'no-restructure->bonus revoked'))
+            # ---- RERUN_CAP hard gate (goal_classifier_max_runs analogue) --------------------
+            # Bound real verification attempts independently of MAXR. On reaching RERUN_CAP reruns
+            # without a confirm, force EXACTLY ONE mandatory deep reflection (stuck-reread +
+            # strategist) regardless of the normal cadences, then give one more rerun window. If
+            # that window ALSO exhausts RERUN_CAP without confirming, stop with a clear reason
+            # rather than hard-trying all the way to the total-turn ceiling. Integrates with the
+            # existing reread/strategist machinery (reuses the same renderers + injection slots).
+            if reruns_since_reflection >= RERUN_CAP:
+                if not deep_reflection_done:
+                    deep_reflection_done = True
+                    reruns_since_reflection = 0
+                    fired['rerun_cap'] = fired.get('rerun_cap', 0) + 1
+                    # force the stuck-reread regardless of its own cadence anchor
+                    _rs, _de, _hy = run_stuck_reread(D, cid, victim, main_src, rerun_history)
+                    _rr = render_reread_note(_rs, _de, _hy, str(D / 'plan.md'))
+                    if _rr:
+                        reread_note = _rr
+                        fired['reread'] += 1
+                        for _h in _hy:
+                            reread_seen_classes.add((_h['category'], _h['subclass']))
+                    # force the strategist regardless of the stall/cadence claim guard (non-directional
+                    # trigger, so no entrypoint redirect); its note wins the injection slot this turn
+                    _note, _skey = run_strategist(D, consecutive_no_loss, objective,
+                                          render_plan(plan_items), hints, rerun_history,
+                                          trigger='rerun_cap', route_close=route_close)
+                    if _note:
+                        strategy_note = _note
+                        last_strategist_key = _skey
+                        fired['strategist'] += 1
+                    log.append(('rerun_cap', f'forced deep reflection @ {len(rerun_history)} reruns'))
+                    transcript.append('[loop] RERUN_CAP reached — forced ONE mandatory deep reflection '
+                                      '(stuck-reread + strategist). This is your final reflection window; '
+                                      'use the re-derived hypotheses and strategy note, change the MECHANISM '
+                                      '(not just constants), then resubmit.')
+                else:
+                    log.append(('rerun_cap', f'stop: {len(rerun_history)} reruns, reflection already spent'))
+                    (D / 'plan.md').write_text(render_plan(plan_items))
+                    (D / 'transcript.md').write_text('\n\n'.join(transcript))
+                    return {'id': cid, 'outcome': 'rerun_cap', 'turns': rnd, 'rounds': rnd,
+                            'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'nrerun': nrerun,
+                            'refs': refs_used, 'last_reason': best_reason, 'mech': fired,
+                            'stop_reason': f'rerun cap ({RERUN_CAP}) exhausted twice, after one forced deep reflection, still unconfirmed'}
             continue
         if tool == 'edit_plan':
             msgs = apply_plan_ops(plan_items, act.get('ops'))
