@@ -40,6 +40,154 @@ RAG_K   = int(os.environ.get('RAG_K', 5))
 TEMP    = float(os.environ.get('AGENT_TEMP', '0.3'))
 CTX_WINDOW = int(os.environ.get('AGENT_CTX_CHARS', 70000))  # sliding window over the TRANSCRIPT tail only
 SRC_PREVIEW = int(os.environ.get('SRC_PREVIEW_CHARS', 6000))
+STRATEGY_MODEL = os.environ.get('STRATEGY_MODEL') or MODEL  # strategist reuses the agent model unless overridden
+
+# =====================================================================================
+# Grok Build verdict-stream mechanisms (faithfully reproduced from
+# github.com/xai-org/grok-build  crates/codegen/xai-grok-shell/src/session/).
+# All five are keyed to the EXTERNAL verifier verdict stream = confirm.py's forge rerun.
+# A failed `rerun` (compile/revert/no-net-loss) is a `NotAchieved` verdict; a loop-confirmed
+# rerun is `Achieved`. The agent's own narrative is NEVER a terminal signal (only a nudge).
+# =====================================================================================
+
+# goal_tracker.rs:13-21 — stall / strategist thresholds.
+GOAL_CLASSIFIER_STALL_THRESHOLD = 2          # same-fingerprint repeats before a stall fires
+GOAL_STRATEGIST_CAP_BONUS       = 3          # extra turn budget granted on a strategist fire
+GOAL_STRATEGIST_STALL_THRESHOLD = GOAL_CLASSIFIER_STALL_THRESHOLD + GOAL_STRATEGIST_CAP_BONUS
+GOAL_REVERIFY_AFTER = int(os.environ.get('GOAL_REVERIFY_AFTER', 3))  # dwell before reverify pressure
+
+# goal_strategist.rs:82 strategist_should_fire — skip-robust (>= last_fired + every, not strict %).
+def strategist_should_fire(consecutive, last_fired, every):
+    return every > 0 and consecutive >= last_fired + every
+
+# acp_session_impl/goal_support.rs:229 — GOAL_CONTINUATION_BAIL_PREFACE (verbatim intent).
+GOAL_CONTINUATION_BAIL_PREFACE = ("You appear to be stopping or handing off, but the goal is NOT "
+    "complete and todos remain. Do not end the turn here — keep working.\n\n")
+
+# ---- gap_fingerprint (goal_classifier.rs:995 + normalize_scratch_paths/extract_path_line_tokens) ----
+# Operates on the undecorated failure evidence: normalize the revert reason / net-loss shortfall,
+# strip per-attempt noise (scratch paths, addresses, gas, line numbers, raw integers), then
+# sort+dedup+lowercase tokens so an identical gap maps to one fingerprint regardless of ordering.
+_FP_ADDR = re.compile(r'0x[0-9a-fA-F]{6,}')
+_FP_SRCLINE = re.compile(r'[^\s:]+\.sol:\d+(?::\d+)?')
+_FP_GAS = re.compile(r'gas[:=]?\s*\d+', re.I)
+_FP_SCRATCH = re.compile(r'/(?:tmp|var/folders|private/tmp|workspace/[^\s]*/(?:try|probe)\S*)')
+_FP_NUM = re.compile(r'\b\d+\b')
+
+def gap_fingerprint(reason, trace):
+    """Mirror grok-build gap_fingerprint(): a stable signature of the failure 'gap'."""
+    ev = [reason or '']
+    for ln in (trace or '').splitlines():
+        if re.search(r'revert|\[FAIL|\[Revert|panic|Error \(|assert|net.?loss|EvmError|'
+                     r'does not have|insufficient|overflow|underflow|arithmetic', ln, re.I):
+            ev.append(ln.strip())
+    text = '\n'.join(ev)
+    text = _FP_SCRATCH.sub('<scratch>', text)
+    text = _FP_SRCLINE.sub('<src>', text)
+    text = _FP_ADDR.sub('<addr>', text)
+    text = _FP_GAS.sub('gas', text)
+    text = _FP_NUM.sub('<n>', text)
+    toks = sorted({t.strip().lower() for t in re.split(r'\s+', text) if t.strip()})
+    return '\n'.join(toks)
+
+# ---- premature-stop detector (goal_stop_detector.rs) ----
+# Anchored (^) regexes scanned ONLY over the last non-empty paragraph of the agent's turn text.
+# A hit means the agent is trying to bail/declare-cannot; it is a NUDGE trigger, never terminal.
+_STOP_SRCS = [
+    ('unable_to_proceed', r"^i (?:can(?:'?t|not)|am unable to) (?:proceed|continue|make (?:any )?progress|complete|fix this|exploit|do (?:this|it)|find)\b"),
+    ('giving_up',         r"^(?:giving up|i(?:'m| am) giving up|the task is not actionable|this is a dead[- ]?end|dead[- ]?end\b)"),
+    ('not_exploitable',   r"^(?:this (?:contract|victim) is (?:not|safe)|(?:the )?(?:contract|victim) is not exploitable|not exploitable|no (?:viable )?exploit|genuinely (?:cannot|can'?t|not))\b"),
+    ('stopping_here',     r"^(?:stopping here|i've stopped here|i will stop|parked (?:the|this)|paused here)"),
+    ('verdict_line',      r"^verdict: (?:pass|fail)\b"),
+    ('check_back_later',  r"^(?:i will|i'll|will) (?:check back|re-?check|try again|retry|re-?run later)\b"),
+]
+_STOP_RES = [(lbl, re.compile(src, re.I)) for lbl, src in _STOP_SRCS]
+# cannot-class labels: self-declared inability. Gated by GoalClassifierNudge (needs a real attempt).
+_CANNOT_LABELS = {'unable_to_proceed', 'giving_up', 'not_exploitable', 'verdict_line'}
+
+def last_non_empty_paragraph(text):
+    paras = [p.strip() for p in (text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n\n')]
+    paras = [p for p in paras if p]
+    return paras[-1] if paras else None
+
+def matched_stop_pattern(text):
+    """goal_stop_detector::matched_stop_pattern — ^-anchored, last paragraph only."""
+    para = last_non_empty_paragraph(text)
+    if not para:
+        return None
+    for line in (ln.strip() for ln in para.split('\n') if ln.strip()):
+        for lbl, rx in _STOP_RES:
+            if rx.search(line):
+                return lbl
+    return None
+
+# ---- dwell-escalating reverify block (goal_support.rs:476 render_goal_reverify_block) ----
+def render_goal_reverify_block(rounds_since_verify, refuted, threshold=GOAL_REVERIFY_AFTER):
+    if (not refuted) or rounds_since_verify < threshold:
+        return ''
+    lead = ("STOP DRIFTING — PROVE THE REMAINING NET-LOSS GAP NOW."
+            if rounds_since_verify >= threshold * 3
+            else "Re-run the exploit attempt before continuing.")
+    return (f"{lead} You have run {rounds_since_verify} rounds since the last confirmed "
+            f"net-loss. The loop evaluates completion (confirm.py net-loss) after every rerun. "
+            f"Fix the SINGLE concrete gap blocking net-loss rather than switching approaches or "
+            f"making cosmetic edits.\n\n")
+
+# ---- strategist (goal_strategist.rs + goal_strategist_prompt.md) ----
+# A SEPARATE read-only pass that reads the FULL accumulated context (every PoC .sol, every
+# -vvvv trace, plan.md, the RAG paradigm hits) and writes ONE structural 'change the HOW'
+# recommendation. It must NOT touch plan.md (PlanGuard restores it byte-for-byte).
+STRATEGIST_SYS = '''You are the Goal Strategist for a smart-contract exploit loop. The implementer has FAILED the external net-loss verifier several rounds in a row, flagging a different gap each round (whack-a-mole) and not converging. Diagnose WHY it is stuck and recommend ONE concrete STRUCTURAL change.
+
+Change the HOW, never the WHAT: do NOT touch the objective or the plan's acceptance criteria. You cannot edit any file; your only output is the note below.
+
+Diagnose the ROOT cause (usually: fixating on the wrong entrypoint/hypothesis; a precondition never actually established on-chain; or a PoC whose shape can never express the real value-leak). Recommend a SMALL, mechanical, verifiable restructure the implementer can execute one step at a time — e.g. re-enter a DIFFERENT unlocked state-changing entrypoint instead of the one it keeps hitting, or establish the missing precondition first.
+
+Output ONLY this Markdown note, nothing else:
+
+# Strategy: why the goal is stuck and how to unstick it
+
+## Diagnosis
+<1-3 sentences naming the root structural cause>
+
+## Recommended restructure
+1. <first small, mechanical, verifiable step>
+2. ...
+
+## Why this converges
+<1-2 sentences: how this makes the net-loss gap reachable>'''
+
+def run_strategist(D, consecutive_failures, objective, plan_md, hints, rerun_history):
+    """Separate read-only strategist pass over the FULL accumulated context. Returns note text or ''.
+    PlanGuard: snapshot plan.md bytes before, restore after (strategist must never alter the contract)."""
+    plan_path = D / 'plan.md'
+    plan_snapshot = plan_path.read_bytes() if plan_path.exists() else None
+    # Assemble the full context (all PoC code + all -vvvv traces + plan + RAG hits).
+    blocks = [f'ROUND: failed {consecutive_failures} verification rounds in a row.',
+              f'OBJECTIVE:\n{objective}', f'PLAN (plan.md):\n{plan_md}',
+              f'RAG PARADIGM HINTS:\n{hints}']
+    for (rn, sol, trace, reason) in rerun_history:
+        blocks.append(f'=== rerun try{rn} (verdict: {reason}) ===\nPoC .sol:\n{sol}\n\n'
+                      f'forge -vvvv trace:\n{trace}')
+    full = '\n\n'.join(blocks)
+    note = ''
+    try:
+        note = (gen_model(STRATEGY_MODEL, STRATEGIST_SYS + '\n\n# FULL ACCUMULATED CONTEXT\n' + full,
+                          temp=0.2) or '').strip()
+        note = re.sub(r'^```\w*\n?|```$', '', note, flags=re.M).strip()
+    except Exception as e:
+        note = ''
+    finally:
+        # PlanGuard restore: the contract file is byte-identical regardless of this pass.
+        if plan_snapshot is not None:
+            plan_path.write_bytes(plan_snapshot)
+    if note:
+        (D / 'strategy.md').write_text(note)
+    # A note with no actionable 'Recommended restructure' counts as "produced nothing" -> revoke.
+    if not note or 'recommended restructure' not in note.lower():
+        return ''
+    return note
+
 
 SYS = '''You are a smart-contract exploit auditor working as ONE agent in a goal-driven loop (no teammates).
 GOAL: decide if VICTIM is exploitable by an UNPRIVILEGED attacker and PROVE it with a Foundry fork test.
@@ -224,14 +372,54 @@ def one(cid, victim, block, outdir):
             + main_src[:SRC_PREVIEW] + ('\n...<preview truncated; read_source for more>' if len(main_src) > SRC_PREVIEW else '')
             + '\n\n# HISTORICAL ATTACK PARADIGMS (advisory hints only; NOT this contract\'s PoC):\n' + hints)
 
+
+    objective = (f'Prove VICTIM {victim} is exploitable by an UNPRIVILEGED attacker with a '
+                 f'Foundry fork test the loop confirms (victim net-loss above threshold). '
+                 f'If not, keep probing until proven — never self-declare safe/cannot.')
     transcript, log, t0 = [], [], time.time()
     nread, nrerun, best_reason = 0, 0, None
     prev_failed, last_fail = False, ''
 
-    for rnd in range(1, MAXR + 1):
+    # ---- Grok Build verdict-stream state ----
+    last_gap_fp = None                 # goal_tracker: last_gap_fingerprint
+    stall_count = 0                    # goal_tracker: classifier_stall_count (same-fingerprint repeats)
+    strategist_bonus = 0               # goal_tracker: strategist_cap_bonus (0 or GOAL_STRATEGIST_CAP_BONUS)
+    last_strategist_fired_at = 0       # goal_tracker: last_strategist_fired_at
+    consecutive_no_loss = 0            # goal_tracker: consecutive_not_achieved (NotAchieved streak)
+    primary_rerun_done = False         # GoalClassifierNudge gate: a real rerun on the primary hypothesis
+    strategy_note = ''                 # last strategist recommendation (injected next turn)
+    bail_pending = None                # stop-detector label -> bail nudge next turn
+    cannot_nudge = False               # GoalClassifierNudge: force a primary rerun before 'cannot'
+    fired = {'stall': 0, 'strategist': 0, 'strategist_empty': 0, 'bail': 0, 'cannot_gate': 0, 'reverify': 0}
+    budget = MAXR                      # dynamic turn budget (strategist fire adds GOAL_STRATEGIST_CAP_BONUS)
+    rerun_history = []                 # (round, sol, trace, reason) — the FULL context the strategist reads
+
+    rnd = 0
+    while rnd < budget:
+        rnd += 1
         nxt = next_unchecked(plan_items)
+        refuted = consecutive_no_loss >= 1
+        # Mode B bail preface (goal_support.rs GOAL_CONTINUATION_BAIL_PREFACE) — re-serve next item.
+        preface = GOAL_CONTINUATION_BAIL_PREFACE if bail_pending else ''
+        # Mode 5 dwell-escalating reverify pressure (render_goal_reverify_block).
+        reverify = render_goal_reverify_block(consecutive_no_loss, refuted)
+        if reverify: fired['reverify'] += 1
         nudge = ('\n\n# PLAN (plan.md)\n' + render_plan(plan_items)
                  + (f'\n\n[next unchecked] {nxt["id"]}: {nxt["text"]}' if nxt else '\n\n[plan] all items checked — if not yet confirmed, add the next concrete step.'))
+        if preface:
+            nudge = '\n\n' + preface + nudge.lstrip('\n')
+        if reverify:
+            nudge += '\n[reverify] ' + reverify.strip()
+        # Mode A strategist note injected into the next turn (change the HOW).
+        if strategy_note:
+            nudge += ('\n\n[strategist — STRUCTURAL advice, change the HOW not the WHAT; strategy.md]\n'
+                      + strategy_note)
+        # Mode 4 GoalClassifierNudge: 'cannot' is not eligible until a real primary rerun ran.
+        if cannot_nudge:
+            nudge += ('\n[classifier-nudge] You signalled you cannot proceed, but you have NOT run a '
+                      'single rerun on the primary hypothesis. "cannot" is NOT acceptable yet — implement '
+                      'the primary chain (preconditions first) and submit a rerun THIS turn.')
+            fired['cannot_gate'] += 1
         if prev_failed:
             nudge += (f'\n[reflect-required] Your previous action FAILED ({last_fail}). Add a "reflect" field BEFORE "tool": classify (compile/syntax | wrong approach | almost-right needs fix) and name the concrete change. Do NOT resend the same thing.')
         # sliding window over the transcript tail (pins + plan stay; oldest transcript drops)
@@ -245,6 +433,8 @@ def one(cid, victim, block, outdir):
         prompt = pins + '\n\n# TRANSCRIPT (your turns + tool results)\n' + tbody + nudge + '\n\nYour next single JSON action:'
 
         out = gen_model(MODEL, prompt, temp=TEMP)
+        # Mode B premature-stop detector over the RAW turn text (anchored, last paragraph only).
+        stop_lbl = matched_stop_pattern(out)
         act = _parse_action(out)
         tool = act.get('tool')
         reflect = str(act.get('reflect') or '').strip()
@@ -254,6 +444,16 @@ def one(cid, victim, block, outdir):
         if 'body' in act: echo['body'] = f'<probe body, {len(act.get("body") or "")} chars>'
         transcript.append(f'[turn {rnd}] you: {json.dumps(echo, ensure_ascii=False)[:1200]}')
         prev_failed, last_fail = False, ''
+        bail_pending, cannot_nudge = None, False
+        # Evaluate the stop signal: it is a NUDGE, never terminal.
+        if stop_lbl and (not primary_rerun_done) and stop_lbl in _CANNOT_LABELS:
+            cannot_nudge = True      # GoalClassifierNudge gate wins: force a primary rerun first
+            log.append(('cannot_gate', stop_lbl))
+        elif stop_lbl:
+            bail_pending = stop_lbl  # refuse to end: bail preface + re-serve next item next turn
+            fired['bail'] += 1
+            log.append(('bail', stop_lbl))
+            transcript.append(f'[loop] premature-stop pattern "{stop_lbl}" detected — NOT terminal; continuing.')
 
         if tool == 'read_source':
             res = read_source(full_lines, grep=act.get('grep') or act.get('query'), rng=act.get('range'))
@@ -297,14 +497,53 @@ def one(cid, victim, block, outdir):
             reason = parse_reason(ok, fo)
             best_reason = reason
             log.append(('rerun', reason))
+            # A rerun that actually executed = a real attempt on the primary hypothesis (unlocks 'cannot').
+            primary_rerun_done = True
+            trace_for_ctx = _trace_for_agent(fo)
+            rerun_history.append((rnd, sol[:6000], trace_for_ctx, reason))
             if ok:
+                # Achieved: the EXTERNAL verifier accepted it. Only terminal success.
                 (D / 'VERIFIED.sol').write_text(sol)
+                (D / 'transcript.md').write_text('\n\n'.join(transcript))
                 return {'id': cid, 'outcome': 'verified', 'turns': rnd, 'rounds': rnd,
                         'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'nrerun': nrerun,
-                        'refs': refs_used, 'sol': sol[:400]}
+                        'refs': refs_used, 'sol': sol[:400], 'mech': fired}
+            # NotAchieved verdict -> drive the counters (goal_tracker).
             prev_failed = True
             last_fail = 'compile error' if reason == 'compile error' else f'forge {reason}'
-            transcript.append(f'[result rerun] forge FAILED ({last_fail}); test saved try{rnd}.raw.sol.\n--- forge -vvvv trace ---\n{_trace_for_agent(fo)}')
+            consecutive_no_loss += 1                              # record_not_achieved_streak
+            fp = gap_fingerprint(reason, fo)                      # gap_fingerprint
+            # record_classifier_stall: same fingerprint -> increment, else reset to 1.
+            if last_gap_fp == fp:
+                stall_count += 1
+            else:
+                last_gap_fp = fp; stall_count = 1
+            threshold = GOAL_STRATEGIST_STALL_THRESHOLD if strategist_bonus > 0 else GOAL_CLASSIFIER_STALL_THRESHOLD
+            stalled = stall_count >= threshold
+            transcript.append(f'[result rerun] forge FAILED ({last_fail}); saved try{rnd}.raw.sol. '
+                              f'[no-loss streak {consecutive_no_loss}, gap-repeat {stall_count}/{threshold}]\n'
+                              f'--- forge -vvvv trace ---\n{trace_for_ctx}')
+            # Mode A: stall -> fire the SEPARATE strategist (claim_strategist_fire semantics).
+            # Mode A fire: stall reached (same gap-fingerprint >= threshold). claim_strategist_fire
+            # guard: never double-fire on the identical consecutive streak value.
+            if stalled and consecutive_no_loss != last_strategist_fired_at:
+                last_strategist_fired_at = consecutive_no_loss
+                strategist_bonus = GOAL_STRATEGIST_CAP_BONUS      # idempotent, raises stall threshold
+                budget += GOAL_STRATEGIST_CAP_BONUS               # budget bonus
+                # reset_classifier_stall_fields
+                last_gap_fp = None; stall_count = 0
+                fired['stall'] += 1
+                log.append(('strategist', f'fire@streak{consecutive_no_loss}'))
+                note = run_strategist(D, consecutive_no_loss, objective,
+                                      render_plan(plan_items), hints, rerun_history)
+                if note:
+                    strategy_note = note
+                    fired['strategist'] += 1
+                else:
+                    # produced nothing -> revoke the cap bonus (goal_tracker.revoke_strategist_cap_bonus).
+                    strategist_bonus = 0; budget -= GOAL_STRATEGIST_CAP_BONUS
+                    fired['strategist_empty'] += 1
+                    log.append(('strategist', 'empty->revoked'))
             continue
         if tool == 'edit_plan':
             msgs = apply_plan_ops(plan_items, act.get('ops'))
@@ -318,9 +557,10 @@ def one(cid, victim, block, outdir):
 
     (D / 'plan.md').write_text(render_plan(plan_items))
     (D / 'transcript.md').write_text('\n\n'.join(transcript))
-    return {'id': cid, 'outcome': 'over_budget', 'turns': MAXR, 'rounds': MAXR,
+    return {'id': cid, 'outcome': 'over_budget', 'turns': rnd, 'rounds': rnd,
             'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'nrerun': nrerun,
-            'refs': refs_used, 'last_reason': best_reason}
+            'refs': refs_used, 'last_reason': best_reason, 'mech': fired}
+
 
 # reuse the same TARGETS as loop.py
 from loop import TARGETS
