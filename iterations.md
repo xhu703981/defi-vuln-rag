@@ -362,4 +362,35 @@ price_manipulation (Jimbo, SellToken02) alongside access_control — the right d
 - 代价：profit 口径比 victim-drain 松 → 必须用 safe 集复核假阳性（靠阈值 + 快照定价 + a0 扣本金压）。
 - 性质：与 2026-10-19 同属正当判据修订（在 confirm.py 内、新 md5、写进 iterations），不是 runner 后门。
 
-Offline / baseline+safe 复核结果：见本段后续更新。
+### Offline / baseline+safe 复核结果 (zero-cost, 无模型调用)
+
+从离线 `injected.sol` fixtures 反注入(deinject)恢复 raw：删 `/* === LOOP-INJECTED ... */` 到合约末 `}` 前、`_loop_user_(test\w*)`→`\1`；raw fixtures(POS、cheap `tryN.raw.sol`)直接用。每个过新 confirm.check（BSC_RPC 不打印，RPC 已 redact）。结果写 `data/confirm/offline_nv/summary.json`。
+
+| case | expected | got | reason |
+|---|---|---|---|
+| SAFE (skim) | false | **false** | LOOP: attacker net value gain below threshold |
+| SAFE_swap_roundtrip (合成 WBNB→USDT→WBNB) | false | **false** | 同上（本金在 a0 净出、手续费使 net<0） |
+| POS (合成正例) | true | **true** | confirmed |
+| POS_native | true | **true** | confirmed |
+| XSURGE cheap try5 (已验证正例) | true | **true** | confirmed |
+| XSURGE_try2 | — | false | net value gain below threshold（本就是失败 try） |
+| BeatXswap_try3 | — | false | net value gain below threshold（未翻盘：赃物非攻击者持有/低于阈值） |
+| BambooIA_try9 | — | false | net value gain below threshold |
+| wKeyDAO_try11 | — | false | net value gain below threshold |
+| LPBonus_try10 | — | false | setUp INSUFFICIENT_LIQUIDITY（工程错，非 confirm） |
+| ULME_try11 | — | false | agent 自带 balanceOf require（非 confirm） |
+| GDC_try11 | — | false | agent 自带 'Victim WBNB not decreased' require（非 confirm 判决） |
+
+**无假阳性**：SAFE skim 与合成 LP round-trip 都保持 false；三个已知正例(POS/POS_native/XSURGE verified)全部保持 true。新判据对真利润/真安全的判别在离线集上与旧判据一致，口径放松未引入误报。LOOP_MIN_GAIN_WEI 仍为默认 `1e16`，暂无需调整。
+
+### Agent 重跑 5 卡住案例 (新 confirm, cheap 配置 MAXR=8/RERUN_CAP=3/CTX=35k, nonce nv_1792534146)
+
+| case | outcome | last_reason |
+|---|---|---|
+| BambooIA | over_budget | Ownable: caller is not the owner (agent) |
+| LPBonus | over_budget | LOOP: net value gain below threshold |
+| ULME | over_budget | Victim did not lose tokens (agent require) |
+| wKeyDAO | over_budget | Initialization failed - already initialized (agent) |
+| GDC | over_budget | LOOP: net value gain below threshold |
+
+verified 0/5；reject 类全空；成本 ≈ $1.55，cache 命中 44%。新不变量未把任何一案翻成 verified；GDC/LPBonus 终局已是真正的净值判据（机制未打通），其余三案死在 agent 自身 require。SAFE 零假阳性。下一步证据指向 agent 推理深度，非 confirm。
