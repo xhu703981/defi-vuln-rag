@@ -19,6 +19,9 @@ RAG_K = int(os.environ.get('RAG_K', 5))
 SYS = '''You are a smart-contract exploit auditor. Goal: decide if VICTIM is exploitable by an UNPRIVILEGED attacker and PROVE it with a Foundry fork test. Reply EVERY turn with ONLY one JSON object:
 {"tool":"read_chain","call":"<addr> <sig(types)(rets)> [args...]"}
 {"tool":"run_test","sol":"<full Foundry forge-std .sol>"}
+SELF-REFLECTION (mandatory after any failure): if your PREVIOUS action failed - a run_test that did not compile, reverted, or failed the loop confirmation, or a rejected action - then your NEXT JSON MUST ALSO carry a "reflect" field placed BEFORE "tool":
+{"reflect":"<1-3 sentences>","tool":"run_test","sol":"..."}  or  {"reflect":"<1-3 sentences>","tool":"read_chain","call":"..."}
+In "reflect" you MUST (a) CLASSIFY the previous failure as exactly one of: `compile/syntax` | `wrong approach` | `almost-right needs fix`, and (b) NAME the concrete change you are making now (which function/line/idea). Do not repeat the same failing attempt verbatim; a reflection that just restates the error is not acceptable.
 read_chain budget: at most %d calls for the whole run. After that you MUST only use run_test.
 There is NO "declare safe" / "no risk" action. Your only terminal success is a run_test the loop confirms. If a test fails, read the error and try a DIFFERENT attack or fix; keep going until you confirm or run out of rounds.
 CONFIRMATION (enforced by the loop, not by your asserts): victim LOSES some tracked asset AND the attacker GAINS some tracked asset (cross-asset OK - the gained token need not equal the lost token). Additionally the value victim lost (at snapshot prices) must exceed the value of assets the victim GAINED from you (consideration) by more than %.1f%% - fair swaps and add/remove-liquidity round-trips fail. Attacker net-worth / sellability is NOT required (unsellable loot still counts).
@@ -28,7 +31,7 @@ Test rules:
 - In testExploit: attack only, using live reads for fees/mins/balances/prices (no hardcoded mutable constants).
 - Prefer assert-free body; the loop wraps your test with its own confirmation. The victim MUST end with a lower balance of the drained asset than at the start of testExploit; paying in and withdrawing an equal/lesser amount fails confirmation.
 - Only call functions present in the given source. Use checksummed addresses.
-When a run_test fails to compile or reverts, that is an ordinary tool result: read the forge error, FIX your test or switch approach, and submit run_test again - do not give up.'''
+When a run_test fails to compile or reverts, that is an ordinary tool result: read the forge error, FIRST classify it in "reflect" (compile/syntax vs wrong approach vs almost-right needs fix) and name what you change, THEN submit run_test again - do not give up and do not resend the same code.'''
 
 def one(cid, victim, block, outdir):
     D = Path(outdir); D.mkdir(parents=True, exist_ok=True)
@@ -56,25 +59,44 @@ def one(cid, victim, block, outdir):
         elif log_err:
             refs_used = [{'error': log_err}]
     log, t0, nread, ran_ok = [], time.time(), 0, False
+    prev_failed = False   # set True whenever a run_test / read action failed or was rejected
+    last_fail = ''        # short tag of what failed, surfaced in the reflect demand
     for rnd in range(1, MAXR + 1):
         hint = ''
         if nread >= MAX_READ:
             hint = f'\n[budget] read_chain exhausted ({nread}/{MAX_READ}). You MUST reply with run_test only.'
-        out = gen_model(MODEL, hist + hint + '\n\nYour next single JSON action:', temp=0.2)
-        try: act = json.loads(re.search(r'\{[\s\S]*\}', out).group(0))
-        except Exception: act = {}
+        if prev_failed:
+            hint += (f'\n[reflect-required] Your previous action FAILED ({last_fail}). Your next JSON MUST include a "reflect" field BEFORE "tool": '
+                     'first CLASSIFY the failure (compile/syntax | wrong approach | almost-right needs fix), then NAME the concrete change. Do NOT resend the same code.')
+        # bounded re-ask so a missing reflection does not silently burn the round
+        act = {}
+        for _try in range(2):
+            out = gen_model(MODEL, hist + hint + '\n\nYour next single JSON action:', temp=0.2)
+            try: act = json.loads(re.search(r'\{[\s\S]*\}', out).group(0))
+            except Exception: act = {}
+            if prev_failed and not str(act.get('reflect') or '').strip():
+                hint += '\n[reflect-required] REJECTED: you omitted "reflect". Re-send the SAME intended action but add the mandatory "reflect" field.'
+                continue
+            break
         tool = act.get('tool')
-        hist += f'\n\n[round {rnd}] you: {json.dumps(act)[:500]}'
+        reflect = str(act.get('reflect') or '').strip()
+        if reflect:
+            log.append(('reflect', reflect[:600]))
+        echo = {k: act[k] for k in act if k != 'sol'}
+        if 'sol' in act:
+            echo['sol'] = f'<full .sol saved as try{rnd}.raw.sol ({len(act.get("sol") or "")} chars)>'
+        hist += f'\n\n[round {rnd}] you: {json.dumps(echo, ensure_ascii=False)[:1400]}'
         if tool == 'read_chain':
             if nread >= MAX_READ:
                 fb = f'REJECTED: read_chain budget exhausted ({MAX_READ}). Use run_test only.'
-                log.append(('reject', fb)); hist += f'\n[result] {fb}'; continue
+                log.append(('reject', fb)); hist += f'\n[result] {fb}'; prev_failed=True; last_fail='read budget rejected'; continue
             parts = (act.get('call') or '').split()
             if parts: parts[0] = csum(parts[0])
             v = vc.cast(block, 'call', *parts) if len(parts) >= 2 else 'ERR:bad call'
             nread += 1
             fb = f'cast {redact(act.get("call",""))} => {v[:300]} (reads {nread}/{MAX_READ})'
             log.append(('cast', fb)); hist += f'\n[result] {fb}'
+            prev_failed = v.startswith('ERR'); last_fail = 'read_chain error' if prev_failed else ''
             continue
         if tool == 'run_test':
             sol = re.sub(r'^```\w*\n?|```$', '', (act.get('sol') or '').strip(), flags=re.M)
@@ -82,11 +104,11 @@ def one(cid, victim, block, outdir):
             why = bogus(sol)
             if why:
                 fb = f'REJECTED anti-cheat: {why}'
-                log.append(('reject', fb)); hist += f'\n[result] {fb}'; continue
+                log.append(('reject', fb)); hist += f'\n[result] {fb}'; prev_failed=True; last_fail='anti-cheat reject'; continue
             sol2, err = inject_confirm(sol, victim)
             if err:
                 fb = f'REJECTED inject: {err}'
-                log.append(('reject', fb)); hist += f'\n[result] {fb}'; continue
+                log.append(('reject', fb)); hist += f'\n[result] {fb}'; prev_failed=True; last_fail='inject reject'; continue
             (D / f'try{rnd}.sol').write_text(sol2)
             write_proj(D, sol2)
             ok, fo = run_forge(D)
@@ -96,8 +118,16 @@ def one(cid, victim, block, outdir):
             if ok:
                 return {'id': cid, 'outcome': 'verified', 'rounds': rnd, 'sec': round(time.time() - t0),
                         'log': log, 'sol': sol[:400], 'nread': nread, 'refs': refs_used}
-            hist += f'\n[result] forge failed (compile/revert/LOOP confirm):\n{fo[-2200:]}'
+            reason = parse_reason(ok, fo)
+            prev_failed = True
+            last_fail = 'compile error' if reason == 'compile error' else f'forge {reason}'
+            # key lines of the failing test so the model's reflection can reference its own code
+            body = re.search(r'function\s+testExploit[\s\S]*?\n\s*\}', sol)
+            keyln = (body.group(0) if body else sol)[:1200]
+            hist += (f'\n[result] forge failed ({last_fail}); your test is saved as try{rnd}.raw.sol. '
+                     f'Key lines of your testExploit:\n{keyln}\n--- forge output tail ---\n{fo[-2200:]}')
             continue
+        prev_failed=True; last_fail='unrecognized action'
         hist += '\n[result] Unrecognized. Reply ONLY one of the two JSON tools (read_chain or run_test).'
     return {'id': cid, 'outcome': 'over_budget', 'rounds': MAXR, 'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'refs': refs_used}
 
