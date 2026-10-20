@@ -55,8 +55,9 @@ Write plan.md as markdown with headings `## Entrypoint map`, `## Paradigm checkl
 `## Hypotheses`. Then, LAST, emit a fenced ```json block the loop will parse:
 ```json
 {"hypotheses":[
- {"id":"H1","class":"<vuln class>","entry":"<fn call order>","asset_flow":"<who loses what / attacker gains what>","signal":"<which victim asset drops>"},
- {"id":"H2", ...}
+ {"id":"H1","class":"<vuln class>","primary":true,"entry":"<exact fn call order>","asset_flow":"<who loses what / attacker gains what>","signal":"<which victim asset drops>","guard":"<the guard observed, or empty>","bypass":"<the exact bypass mechanism + reentrancy/entrypoint logic to code, or empty>"},
+ {"id":"H2","class":"<vuln class>","primary":false,"entry":"...","asset_flow":"...","signal":"...","guard":"","bypass":""}
 ]}
 ```
+Set `"primary":true` on EXACTLY ONE hypothesis: the guard+bypass real-chain from STEP 2.5 if one exists, otherwise your single most-likely net-drain chain. List it FIRST. For the primary (and any guarded-but-real hypothesis) you MUST fill `guard` and `bypass` with the concrete entrypoint/reentrancy logic the coder has to implement — be specific (which function re-enters which, call order, who funds what).
 Keep prose under ~500 words. Do NOT write Solidity.

@@ -70,13 +70,27 @@ def parse_hypotheses(plan):
         except Exception:
             continue
     if not hyps:  # fallback: treat whole plan as a single hypothesis
-        return [{'id': 'H1', 'class': 'single', 'entry': '', 'asset_flow': '', 'signal': ''}]
-    return hyps[:MAX_HYP]
+        return [{'id': 'H1', 'class': 'single', 'entry': '', 'asset_flow': '', 'signal': '', 'primary': True}]
+    hyps = hyps[:MAX_HYP]
+    # put the annotated guard+bypass real-chain FIRST: explicit primary flag, else first with a bypass, else first
+    def _rank(h):
+        if h.get('primary'): return 0
+        if (h.get('bypass') or '').strip(): return 1
+        return 2
+    hyps = sorted(hyps, key=_rank)
+    if hyps:
+        hyps[0]['primary'] = True  # the loop treats position-0 as the real chain
+    return hyps
 
 def _hyp_text(h):
-    return (f"HYPOTHESIS {h.get('id','?')} — class={h.get('class','')}\n"
-            f"entry: {h.get('entry','')}\nasset_flow: {h.get('asset_flow','')}\n"
-            f"success signal: {h.get('signal','')}")
+    s = (f"HYPOTHESIS {h.get('id','?')} — class={h.get('class','')}\n"
+         f"entry: {h.get('entry','')}\nasset_flow: {h.get('asset_flow','')}\n"
+         f"success signal: {h.get('signal','')}")
+    if (h.get('guard') or '').strip():
+        s += f"\nguard: {h.get('guard','')}"
+    if (h.get('bypass') or '').strip():
+        s += f"\nbypass (MUST code this exact logic): {h.get('bypass','')}"
+    return s
 
 def plan_agent(base, victim, refs_checklist, replan=None):
     rb = ''
@@ -87,13 +101,28 @@ def plan_agent(base, victim, refs_checklist, replan=None):
     prompt = _tpl('planner.md', victim=victim, refs_checklist=refs_checklist, replan_block=rb) + '\n\n' + base
     return gen_model(PLAN_MODEL, prompt, temp=0.3).strip()
 
-def code_agent(base, victim, block, plan, hyp, prev_sol=None, prev_err=None):
+def code_agent(base, victim, block, plan, hyp, all_hyps, primary_hyp, prev_sol=None, prev_err=None):
     rb = ''
     if prev_sol:
         rb = ('REVISE: your previous test is below with its forge output. Fix per the plan; do not resend it verbatim.\n'
               f'--- previous .sol ---\n{prev_sol[:4000]}\n--- forge output tail ---\n{(prev_err or "")[-2000:]}')
+    # The annotated guard+bypass real-chain goes FIRST, marked MUST-implement.
+    must = ('# MUST-IMPLEMENT REAL CHAIN (do this FIRST, do NOT skip it)\n'
+            'The planner marked the following hypothesis as the real attack chain. You MUST encode its\n'
+            'EXACT entrypoint/reentrancy logic (the call order, which function re-enters which, and the\n'
+            'guard bypass named below). Do not substitute a different, easier branch; this logic has to be\n'
+            'in the test.\n' + _hyp_text(primary_hyp))
+    # all hypotheses, for full context
+    allh = '# ALL PLAN HYPOTHESES (for context; the one you build this candidate around is marked TARGET)\n' + \
+           '\n\n'.join((('>>> TARGET: ' if h.get('id')==hyp.get('id') else '') + _hyp_text(h)) for h in all_hyps)
+    same_as_primary = hyp.get('id') == primary_hyp.get('id')
+    target = ('# THIS CANDIDATE\n' +
+              ('You are building the REAL CHAIN candidate above — implement it directly.'
+               if same_as_primary else
+               'You are building a BACKUP candidate around TARGET hypothesis ' + str(hyp.get('id')) +
+               '. Implement that target chain; you may also fold in the real-chain logic above if it helps net-drain.'))
     prompt = (_tpl('coder.md', victim=victim, block=block, revise_block=rb)
-              + '\n\n# IMPLEMENT THIS ONE HYPOTHESIS\n' + _hyp_text(hyp)
+              + '\n\n' + must + '\n\n' + allh + '\n\n' + target
               + '\n\n# FULL STRATEGY (plan.md)\n' + plan + '\n\n# CONTEXT & SOURCE\n' + base)
     out = gen_model(CODE_MODEL, prompt, temp=0.2)
     return re.sub(r'^```\w*\n?|```$', '', out.strip(), flags=re.M)
@@ -146,10 +175,12 @@ def one(cid, victim, block, outdir):
         if not alive:
             break
         # write + run a PoC for each surviving hypothesis in parallel, vote by net-loss result
+        all_hyps = [st[hid]['hyp'] for hid in st]
+        primary_hyp = next((h for h in all_hyps if h.get('primary')), all_hyps[0])
         results = {}
         def work(hid):
             s = st[hid]
-            sol = code_agent(base, victim, block, plan, s['hyp'], s['prev_sol'], s['prev_err'])
+            sol = code_agent(base, victim, block, plan, s['hyp'], all_hyps, primary_hyp, s['prev_sol'], s['prev_err'])
             (R / f'try{rnd}_{hid}.raw.sol').write_text(sol)
             ok, fo, reason = _run_candidate(D, victim, sol, f'cand_{hid}')
             return hid, sol, ok, fo, reason

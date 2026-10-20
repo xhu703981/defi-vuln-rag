@@ -11,5 +11,9 @@ Hard rules:
   (victim loses a tracked asset AND attacker gains one, beyond anything paid in). Paying in and
   withdrawing an equal/lesser amount FAILS — the victim must end strictly poorer in the drained asset.
 - Follow plan.md's chosen class and call order. If you must deviate, stay within the same class.
+- The sections below give you ALL plan hypotheses. The MUST-IMPLEMENT REAL CHAIN is listed FIRST:
+  you MUST encode its exact entrypoint/reentrancy logic (the stated call order, which function
+  re-enters which, and the named guard bypass). Do NOT skip it or silently swap in an easier branch.
+  Build the TARGET hypothesis for this candidate, folding in that real-chain logic.
 
 [[revise_block]]
