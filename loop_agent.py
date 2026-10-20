@@ -36,13 +36,13 @@ from taxonomy import TAXONOMY
 from confirm import (FORGE, THRESH, TO, redact, csum, bogus, inject_confirm, write_proj, parse_reason)
 
 MODEL   = os.environ.get('AGENT_MODEL') or os.environ.get('CODE_MODEL') or 'anthropic/claude-sonnet-4.5'
-MAXR    = int(os.environ.get('MAXR', 25))         # TOTAL-turn ceiling (handle.rs max_turns analogue; each turn = one tool action)
+MAXR    = int(os.environ.get('MAXR', 15))         # TOTAL-turn ceiling (handle.rs max_turns analogue; each turn = one tool action)
 # RERUN_CAP (grok-build goal_classifier.rs GOAL_CLASSIFIER_MAX_RUNS_DEFAULT=10 analogue): the max
 # number of REAL forge verification reruns allowed before a mandatory deep reflection pass, kept
 # INDEPENDENT of MAXR so it bounds hard-trying without inflating the total-turn budget. On hitting
 # the cap the loop forces EXACTLY ONE deep reflection (stuck-reread + strategist); if a second full
 # cap of reruns still does not confirm, it stops with a clear reason rather than grinding to MAXR.
-RERUN_CAP = max(1, int(os.environ.get('RERUN_CAP', 10)))
+RERUN_CAP = max(1, int(os.environ.get('RERUN_CAP', 5)))
 USE_RAG = os.environ.get('USE_RAG', '1') != '0'
 RAG_K   = int(os.environ.get('RAG_K', 5))
 TEMP    = float(os.environ.get('AGENT_TEMP', '0.3'))
