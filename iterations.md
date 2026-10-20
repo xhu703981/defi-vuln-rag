@@ -345,3 +345,21 @@ price_manipulation (Jimbo, SellToken02) alongside access_control — the right d
   Chainlink staleness remains untested in a working exploit. next_strategy_hint: stale feed → skew pool
   via large swap → `reAddLiquidity()` → reverse swap, with correct `sqrtPriceLimitX96`/decimals.
   (Per request, the suggested second cycle was NOT started.)
+
+
+## 确认判据修订 (2026-10-20) — 单条经济不变量
+
+把 N 个补丁式条件(victim 资产下降 / attacker 同资产增益 / stolen>paid·(1+THRESH) / 攻击后现价估值)收敛成一条:
+
+    net = Σ_assets (a1 − a0) · px_snapshot  >  LOOP_MIN_GAIN
+
+- `a0`/`a1` = `_loopSnapAttacker`（this + 所有 CREATE 合约），在 setUp 之后取 → 预充本金已在 a0，净出。
+- `px_snapshot` = 新 `_loopSnapPx`，在 exploit body **之前**读一次；confirm 时不再读现价 → 自砸盘不影响估值、现价 oracle 不可操纵。
+- 覆盖：铸币砸外部池(wKeyDAO)、掏走但砸没(BeatXswap)、普通抽干、价格操纵；均为「攻击者净值↑」的特例。
+- `bogus()` 反作弊一字节未动；`cases.jsonl` md5 不变 (`31f88a35…`)。
+- confirm.py 新 md5：`4ac9ce4e2685b16231629c64c3309209`。
+- 新旋钮：`LOOP_MIN_GAIN_WEI`（默认 `1e16` = 0.01 base-unit；WBNB=USDT=BNB=1 单位，沿用旧约定）。
+- 代价：profit 口径比 victim-drain 松 → 必须用 safe 集复核假阳性（靠阈值 + 快照定价 + a0 扣本金压）。
+- 性质：与 2026-10-19 同属正当判据修订（在 confirm.py 内、新 md5、写进 iterations），不是 runner 后门。
+
+Offline / baseline+safe 复核结果：见本段后续更新。
