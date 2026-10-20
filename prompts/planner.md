@@ -22,10 +22,29 @@ For EACH paradigm below, decide case-by-case: does THIS victim actually expose i
 Treat these as a checklist you must clear, not soft inspiration.
 [[refs_checklist]]
 
+## STEP 2.5 — NO SELF-VETO ON GUARDED-BUT-REAL ENTRYPOINTS (MANDATORY)
+If STEP 1 reveals a REAL ordering or asset-flow bug on an entrypoint (e.g. it sends value out
+BEFORE updating balance/supply/reserve, pays the caller before burning/debiting, or lets a
+callback re-enter mid-state) you MUST NOT discard that entrypoint just because it carries a guard
+(`nonReentrant` lock, a capped gas forward like `{gas: 40000}`, a `require` balance/min check, a
+price-staleness check, slippage bounds, etc.). A guard is NOT proof the attack fails — that is a
+VALIDATION question, not a planning one. Do not veto it here.
+For every such guarded-but-real entrypoint, emit AT LEAST ONE hypothesis in STEP 3 that attempts
+to BYPASS the guard. Label it explicitly: name the `guard:` you observed and the `bypass:` idea,
+drawn from (but not limited to):
+  - cross-function / read-only reentrancy (re-enter a DIFFERENT function the lock does not cover);
+  - multiple attacker contracts taking turns so a per-address/per-tx guard is sidestepped;
+  - same-transaction price/reserve skew (move the oracle/reserve yourself inside the tx);
+  - low-gas callback abuse (a tiny `receive()` body fits in the forwarded gas budget);
+  - stale/alternate state path, flash-loan funded setup, or ordering so the check reads a value
+    you already staged.
+Hand the bypass attempt downstream for the CODER to actually try. Never kill a real bug at plan
+stage on a guard you only reasoned about.
+
 ## STEP 3 — PROPOSE 3-4 STRUCTURALLY DIFFERENT HYPOTHESES
 From STEP 1 + STEP 2, propose 3-4 DISTINCT attack hypotheses that use DIFFERENT mechanisms
 (e.g. reentrancy, price/reserve manipulation, position/LP drain, mint/burn abuse, callback
-misrouting, reward timing). Not four flavors of one idea. For each: name the entrypoint chain,
+misrouting, reward timing). Not four flavors of one idea. If STEP 2.5 flagged a guarded-but-real entrypoint, one of these hypotheses MUST be its labelled guard+bypass attempt. For each: name the entrypoint chain,
 the exact asset flow that leaves the victim strictly poorer, and the clearest success signal
 (which victim asset drops). If a hypothesis can't be made to net-drain, don't include it.
 
