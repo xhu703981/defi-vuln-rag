@@ -24,7 +24,7 @@
 # Safety: never reads DeFiHackLabs PoC/README (only Etherscan-verified source); RPC/keys never printed
 # (confirm.redact / verify_ctx.cast redact); cases.jsonl never written; confirm.py + its net-loss
 # criterion untouched and independent; RAG excludes the query case. No per-case special-casing.
-import re, json, os, sys, subprocess, time, uuid
+import re, json, os, sys, subprocess, time, uuid, tempfile, shutil
 from pathlib import Path
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -91,6 +91,15 @@ LESSONS_K = int(os.environ.get('LESSONS_K', 6))
 # refused unexecuted until a real forge rerun is submitted. Turns reflect-spin into execution
 # feedback. 999 disables. The forced rerun counts into reruns_since_reflection (feeds RERUN_CAP).
 FORCE_RERUN_AFTER = int(os.environ.get('FORCE_RERUN_AFTER', 5))
+# ---- CHANGE 2 config: cheap, decoupled compile-fix subloop ("prevent, don't iterate") ----
+# When a submitted rerun .sol fails to COMPILE (funnel depth 0), do not burn a full big-context
+# agentic round re-fixing two-line syntax. Instead a cheap, no-RAG/no-strategist/no-transcript
+# subloop feeds ONLY {current .sol + the exact compiler error} to a cheap model up to
+# COMPILE_FIX_TRIES times, re-checking compile via the SAME confirm.inject_confirm->write_proj->
+# forge path (compile-only). Gated by COMPILE_FIX (default on, switchable for A/B).
+COMPILE_FIX = os.environ.get('COMPILE_FIX', '1') != '0'
+COMPILE_FIX_TRIES = max(1, int(os.environ.get('COMPILE_FIX_TRIES', 3)))
+FIX_MODEL = os.environ.get('FIX_MODEL') or 'deepseek/deepseek-v3.2'
 # RESUME_SEED (opt-in, default off): when on, one() loads the case's OWN prior-run accumulated
 # knowledge (its lessons.md dead-ends + last failing PoC try*.raw.sol) at the START of the run and
 # pre-populates the lessons ledger + a single synthetic transcript note, so the agent CONTINUES from
@@ -728,6 +737,94 @@ def _trace_for_agent(out):
         return ('COMPILE ERRORS:\n' + head + '\n\n--- output tail ---\n' + out[-(TRACE_CHARS//3):])[:TRACE_CHARS]
     return out[-TRACE_CHARS:]
 
+
+# ---------------- CHANGE 1: funnel-depth classifier ----------------
+_CONFIRM_ASSERT_STR = 'LOOP: attacker net value gain below threshold'  # exact require() in confirm.inject_confirm
+def depth_of(ok, reason, forge_tail):
+    """Furthest funnel depth a rerun reached:
+      0 = submitted but did NOT compile (compile/parser/type error)
+      1 = compiled but the exploit tx reverted at runtime BEFORE any confirm assert
+      2 = reached the confirm criterion assert but FAILED it (the LOOP net-value require fired)
+      3 = confirm PASSED (verified)
+    Returns None when indeterminate (e.g. forge timeout) so max_depth is never inflated.
+    Keys depth 2 on confirm.py's exact require string (read, not modified)."""
+    if ok:
+        return 3
+    r = reason or ''
+    t = forge_tail or ''
+    # depth 2: the injected confirm's economic-invariant require fired.
+    if _CONFIRM_ASSERT_STR in r or _CONFIRM_ASSERT_STR in t or r.startswith('LOOP:'):
+        return 2
+    # depth 0: never built (same compile detector as route_looks_close / parse_reason, extended).
+    if 'compile' in r.lower() or re.search(r'Compiler run failed|ParserError|Error \(\d+\)', t):
+        return 0
+    # indeterminate: a timeout may precede or follow compilation -> do not claim a depth.
+    if 'timeout' in r.lower() or 'timeout' in t.lower():
+        return None
+    # depth 1: it built and executed, then reverted before reaching the confirm assert.
+    return 1
+
+# ---------------- CHANGE 2: cheap, decoupled compile-fix subloop ----------------
+def _forge_build(d):
+    """Compile-only check (no fork run). ok = project built with no compile error."""
+    try:
+        r = subprocess.run([FORGE, 'build'], cwd=d, capture_output=True, text=True, timeout=TO)
+        out = redact(r.stdout + r.stderr)
+        ok = r.returncode == 0 and not re.search(r'Compiler run failed|ParserError|Error \(\d+\)', out)
+        return ok, out[-3000:]
+    except subprocess.TimeoutExpired:
+        return False, f'forge build timeout {TO}s'
+
+def _compile_check(sol, victim):
+    """Route a RAW sol through the SAME confirm.inject_confirm -> write_proj -> forge path, but
+    compile-only. No backdoor: it reuses the identical injection + project writer the verdict uses.
+    Returns (compiled, tail); an inject rejection surfaces as a non-compiling result."""
+    sol2, ierr = inject_confirm(sol, victim)
+    if ierr:
+        return False, f'inject rejected: {ierr}'
+    td = tempfile.mkdtemp(prefix='cfix_')
+    try:
+        write_proj(Path(td), sol2)
+        return _forge_build(Path(td))
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+COMPILE_FIX_PROMPT = (
+    'You are a Solidity compiler-error fixer. Return ONLY the full corrected .sol file and nothing '
+    'else: no prose, no explanation, no markdown fences.\n'
+    'The Foundry test file below FAILS TO COMPILE. Fix ONLY the compile / parser / type errors. Do '
+    'NOT change the attack logic, addresses, amounts, or test semantics. Keep the pragma, every '
+    'import, every contract/interface, every function and the test* body intact.\n\n'
+    '=== COMPILER ERROR ===\n%s\n\n=== CURRENT FILE ===\n%s\n'
+)
+
+def compile_fix(sol, err, victim, model=None, max_fix=None):
+    """Cheap, decoupled, no-context compile-fix subloop. Up to max_fix attempts, each feeding ONLY
+    {current .sol + the exact compiler error} to a cheap model (FIX_MODEL) and re-checking compile
+    via the SAME confirm path (compile-only). No RAG, no strategist, no 70k transcript.
+    Returns (sol, compiled, iters, compact_err)."""
+    model = model or FIX_MODEL
+    max_fix = COMPILE_FIX_TRIES if max_fix is None else max_fix
+    cur = sol
+    last = (err or '')[:4000]
+    iters = 0
+    for _ in range(max_fix):
+        iters += 1
+        prompt = COMPILE_FIX_PROMPT % (last, cur[:40000])
+        try:
+            out = gen_model(model, prompt, temp=0)
+        except Exception as e:
+            return cur, False, iters, redact(str(e))[:300]
+        cand = re.sub(r'^```\w*\n?|```$', '', (out or '').strip(), flags=re.M).strip()
+        if 'pragma' not in cand:
+            continue
+        cur = cand
+        compiled, tail = _compile_check(cur, victim)
+        if compiled:
+            return cur, True, iters, ''
+        last = redact(tail)[:4000]
+    return cur, False, iters, (last or 'persistent compile failure')[:600]
+
 PROBE_TMPL = '''// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
@@ -870,6 +967,8 @@ def one(cid, victim, block, outdir, sources=None):
                  f'If not, keep probing until proven — never self-declare safe/cannot.')
     transcript, log, t0 = [], [], time.time()
     nread, nrerun, best_reason = 0, 0, None
+    max_depth = -1                     # CHANGE 1: furthest funnel depth any rerun reached (-1 = no rerun executed)
+    cf_invoked = cf_resolved = cf_escalated = cf_iters_total = 0   # CHANGE 2: compile-fix subloop stats
     prev_failed, last_fail = False, ''
 
     # ---- Grok Build verdict-stream state ----
@@ -1098,6 +1197,37 @@ def one(cid, victim, block, outdir, sources=None):
             write_proj(D, sol2)
             ok, fo = run_forge_verbose(D)
             reason = parse_reason(ok, fo)
+            # CHANGE 1+2: classify funnel depth, then (depth 0) run the cheap compile-fix subloop so a
+            # two-line syntax error does not burn a big-context round. A resolved fix is re-run through
+            # the SAME confirm.inject_confirm -> write_proj -> forge path (no backdoor around confirm).
+            _d = depth_of(ok, reason, fo)
+            if _d is not None: max_depth = max(max_depth, _d)
+            if (not ok) and COMPILE_FIX and _d == 0:
+                cf_invoked += 1
+                _fixed, _compiled, _it, _cerr = compile_fix(sol, _trace_for_agent(fo), victim)
+                cf_iters_total += _it
+                if _compiled:
+                    cf_resolved += 1
+                    sol = _fixed
+                    (D / f'try{rnd}.raw.sol').write_text(sol)
+                    sol2, err = inject_confirm(sol, victim)
+                    if err:
+                        ok = False; reason = 'inject error'
+                        fo = f'[compile-fix] inject rejected the locally-fixed file: {err}'
+                    else:
+                        (D / f'try{rnd}.sol').write_text(sol2)
+                        write_proj(D, sol2)
+                        ok, fo = run_forge_verbose(D)
+                        reason = parse_reason(ok, fo)
+                    _d2 = depth_of(ok, reason, fo)
+                    if _d2 is not None: max_depth = max(max_depth, _d2)
+                    log.append(('compile_fix', f'resolved in {_it} tries -> {reason}'))
+                else:
+                    cf_escalated += 1
+                    # Surface a COMPACT compile error to the main loop (not the raw 70k build dump).
+                    fo = (f'[compile-fix] PERSISTENT COMPILE FAILURE after {_it} cheap local fix tries '
+                          f'(no-context model). Compact error:\n{_cerr}')
+                    log.append(('compile_fix', f'escalated after {_it} tries (still not compiling)'))
             best_reason = reason
             log.append(('rerun', reason))
             # A rerun that actually executed = a real attempt on the primary hypothesis (unlocks 'cannot').
@@ -1113,7 +1243,7 @@ def one(cid, victim, block, outdir, sources=None):
                 (D / 'transcript.md').write_text('\n\n'.join(transcript))
                 return {'id': cid, 'outcome': 'verified', 'turns': rnd, 'rounds': rnd,
                         'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'nrerun': nrerun,
-                        'refs': refs_used, 'sol': sol[:400], 'mech': fired}
+                        'max_depth': max_depth, 'compile_fix': {'invoked': cf_invoked, 'resolved': cf_resolved, 'escalated': cf_escalated, 'iters': cf_iters_total}, 'refs': refs_used, 'sol': sol[:400], 'mech': fired}
             # NotAchieved verdict -> drive the counters (goal_tracker).
             prev_failed = True
             last_fail = 'compile error' if reason == 'compile error' else f'forge {reason}'
@@ -1262,7 +1392,7 @@ def one(cid, victim, block, outdir, sources=None):
                     (D / 'transcript.md').write_text('\n\n'.join(transcript))
                     return {'id': cid, 'outcome': 'rerun_cap', 'turns': rnd, 'rounds': rnd,
                             'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'nrerun': nrerun,
-                            'refs': refs_used, 'last_reason': best_reason, 'mech': fired,
+                            'max_depth': max_depth, 'compile_fix': {'invoked': cf_invoked, 'resolved': cf_resolved, 'escalated': cf_escalated, 'iters': cf_iters_total}, 'refs': refs_used, 'last_reason': best_reason, 'mech': fired,
                             'stop_reason': f'rerun cap ({RERUN_CAP}) exhausted twice, after one forced deep reflection, still unconfirmed'}
             continue
         if tool == 'edit_plan':
@@ -1279,7 +1409,7 @@ def one(cid, victim, block, outdir, sources=None):
     (D / 'transcript.md').write_text('\n\n'.join(transcript))
     return {'id': cid, 'outcome': 'over_budget', 'turns': rnd, 'rounds': rnd,
             'sec': round(time.time() - t0), 'log': log, 'nread': nread, 'nrerun': nrerun,
-            'refs': refs_used, 'last_reason': best_reason, 'mech': fired}
+            'max_depth': max_depth, 'compile_fix': {'invoked': cf_invoked, 'resolved': cf_resolved, 'escalated': cf_escalated, 'iters': cf_iters_total}, 'refs': refs_used, 'last_reason': best_reason, 'mech': fired}
 
 
 # reuse the same TARGETS as loop.py
