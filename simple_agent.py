@@ -217,6 +217,120 @@ def extract_getters(src):
         # multi-dim arrays: skip (ambiguous getter arity)
     return out
 
+
+# ===================== IMPROVEMENT 4: static transfer-constraint extraction =====================
+# Statically scan the VERIFIED source (never a PoC) for transfer-TIME guards and surface them to the
+# model as a plainly-worded WARNINGS block (NOT code), annotated with LIVE on-chain values of the
+# guarding variables (cast at the fork block, RPC redacted). General regex/heuristic over the source +
+# live reads of whatever vars it discovers; NOT case-hardcoded -> yields a sensible (possibly empty)
+# block for any case. It surfaces constraints only; it never tells the model the exploit.
+_CAP_KW  = re.compile(r'(?:_?max(?:Tx|Transaction|Sell|Buy|Wallet|Hold)\w*Amount|_?maxTxAmount|everyTime(?:Sell|Buy)LimitAmount|(?:sell|buy|tx|txn|wallet|hold)Limit\w*|maxSellAmount|maxBuyAmount)', re.I)
+_GATE_KW = re.compile(r'(?:trading(?:Enabled|Active|Open|Started|Live)?|swapEnabled|swapAndLiquifyEnabled|enableTrade|canTrade|tradeEnabled|tradeOpen|isLaunched|launched|liveTrading)', re.I)
+_BOT_KW  = re.compile(r'(?:isBot|_bot|bots|blacklist|blackList|_blocked|isBlacklisted|cooldown|antiBot|botBlock|mintLock)', re.I)
+_FEE_KW  = re.compile(r'(?:_?(?:tax|buy|sell|liquidity|marketing|dev|total|burn|reflection)Fee|_taxFee|feeRate|feePercent|feeNumerator)', re.I)
+
+def _pubvar_types(src):
+    """{name: elementary-solidity-type} for scalar public state vars (for live cast reads)."""
+    types = {}
+    for m in re.finditer(r'\b(address payable|address|bool|string|bytes\d*|u?int\d*)((?:\[\d*\])*)\s+(' + _PUB_RUN + r')(\w+)\s*[=;]', src):
+        base, arr, mods, name = m.group(1), m.group(2), m.group(3), m.group(4)
+        if 'public' not in mods or arr:
+            continue
+        t = 'uint256' if base == 'uint' else ('int256' if base == 'int' else base)
+        types.setdefault(name, t)
+    return types
+
+def _requires(src):
+    """[(condition, message_or_None)] for every require(...) with a string message."""
+    out = []
+    for m in re.finditer(r'\brequire\s*\(', src):
+        op = src.index('(', m.start()); cl = _match_paren(src, op)
+        if cl < 0:
+            continue
+        inner = src[op + 1:cl]
+        sm = re.search(r'''["']([^"']{2,})["']''', inner)
+        if not sm:
+            continue
+        cond = re.sub(r'\s+', ' ', inner[:sm.start()].rstrip().rstrip(',')).strip()
+        out.append((cond, sm.group(1)))
+    return out
+
+def extract_constraints(block, victim, src):
+    pv = _pubvar_types(src)
+    def live(name):
+        t = pv.get(name)
+        if not t:
+            return None
+        v = vc.cast(block, 'call', victim, f'{name}()({t})')
+        return vc.first(redact(v)) if vc.ok(v) else None
+    lines, seen = [], set()
+    def add(s):
+        if s not in seen:
+            seen.add(s); lines.append(s)
+
+    # (A) require-based transfer-time guards (reverts with a message)
+    for cond, msg in _requires(src):
+        low = (cond + ' ' + msg).lower()
+        if _CAP_KW.search(cond):
+            cat = 'tx-amount cap'
+        elif _GATE_KW.search(cond) or any(k in low for k in ('not open', 'not live', 'not enabled', 'not start', 'unable transfer', 'trading')):
+            cat = 'trading / launch gate'
+        elif _BOT_KW.search(cond) or any(k in low for k in ('bot', 'blacklist', 'blocked', 'locked', 'cooldown')):
+            cat = 'anti-bot / lock / blacklist'
+        else:
+            continue
+        vals = []
+        for w in sorted(set(re.findall(r'[A-Za-z_]\w*', cond))):
+            if w in pv:
+                v = live(w)
+                if v is not None:
+                    vals.append(f'{w}={v}')
+        tail = ('  [live: ' + ', '.join(vals) + ']') if vals else ''
+        add(f'- [{cat}] require({cond}) reverts with "{msg}".{tail}')
+
+    # (B) tx-amount cap / limit public vars (may gate a swapback trigger, not only a revert)
+    for name, t in sorted(pv.items()):
+        if _CAP_KW.search(name) and t.startswith('uint'):
+            v = live(name)
+            if v is not None:
+                add(f'- [tx-amount cap param] {name} = {v} (live). Keep per-transfer amounts within this; exceeding it may revert or trigger internal swap logic.')
+
+    # (C) trading / launch gate bool flags
+    for name, t in sorted(pv.items()):
+        if t == 'bool' and _GATE_KW.search(name):
+            v = live(name)
+            state = ('currently ' + ('ON' if v == 'true' else 'OFF' if v == 'false' else str(v))) if v is not None else 'state unread'
+            add(f'- [trading / launch gate] flag {name} = {v} ({state}). Transfers/swaps may be blocked unless this is ON.')
+
+    # (D) anti-bot / cooldown / blacklist bool flags
+    for name, t in sorted(pv.items()):
+        if t == 'bool' and _BOT_KW.search(name):
+            v = live(name)
+            add(f'- [anti-bot flag] {name} = {v} (live).')
+
+    # (E) fee-on-transfer variables (presence + live value)
+    fee = []
+    for name, t in sorted(pv.items()):
+        if _FEE_KW.search(name) and t.startswith('uint'):
+            v = live(name)
+            if v is not None:
+                fee.append(f'{name}={v}')
+    if fee:
+        add('- [fee-on-transfer] fee variables present (live): ' + ', '.join(fee) + '. Received amount may be less than sent; account for fees when sizing transfers/swaps.')
+    elif re.search(r'\b_transfer\b', src) and re.search(_FEE_KW, src):
+        add('- [fee-on-transfer] _transfer applies fee math (fee-like identifiers found in source). Received amount may be less than sent.')
+
+    if not lines:
+        return ''
+    return (
+        'STATIC TRANSFER-CONSTRAINT WARNINGS (from the verified source; live values read via cast at the '
+        'fork block). These are the token/contract\'s OWN transfer-time guards — respect them or your '
+        'transfers/swaps will revert. This is NOT the exploit, just the walls to avoid hitting blindly:\n'
+        + '\n'.join(lines)
+    )
+# ================================================================================================
+
+
 import shutil, subprocess, tempfile
 def _solar_bin():
     p = shutil.which('solar')
@@ -387,6 +501,7 @@ def main():
     # --- REUSE the pipeline's own context builders (verified source + live state) ---
     main_src, full_src, cname = load_full_source(sources)   # verified Etherscan source, NOT the PoC
     ctx = vc.build_context(block, victim, main_src)          # live on-chain state at the fork block
+    warnings = extract_constraints(block, victim, main_src)  # IMPROVEMENT 4: static transfer-guard warnings (live-valued)
 
     iface, niface, nfunc, ngetter = None, 0, 0, 0
     iface_ok, iface_note = True, 'n/a'
@@ -401,6 +516,11 @@ def main():
     D = Path('data/simple_agent') / sub
     D.mkdir(parents=True, exist_ok=True)
     (D / 'CONTEXT.txt').write_text(ctx)
+    (D / 'WARNINGS.txt').write_text(warnings)
+    if warnings:
+        print('[simple_agent] IMPROVEMENT 4 warnings:\n' + redact(warnings), flush=True)
+    else:
+        print('[simple_agent] IMPROVEMENT 4: no transfer constraints extracted (empty block)', flush=True)
 
     # one static context block shared across rounds
     common = (
@@ -408,6 +528,7 @@ def main():
         + f'# FORK BLOCK: {block}\n'
         + f'# VERIFIED SOURCE CONTRACT(S): {cname} @ {", ".join(sources)}\n'
         + '\n# LIVE ON-CHAIN CONTEXT (read live via cast at the fork block):\n' + ctx
+        + (('\n\n# ' + warnings + '\n') if warnings else '')
         + f'\n\n# VERIFIED CONTRACT SOURCE (contract {cname}; on-chain Etherscan source, NOT a PoC):\n'
         + main_src
     )
