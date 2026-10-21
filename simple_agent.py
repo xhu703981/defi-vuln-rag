@@ -567,6 +567,15 @@ def main():
     main_src, full_src, cname = load_full_source(sources)   # verified Etherscan source, NOT the PoC
     ctx = vc.build_context(block, victim, main_src)          # live on-chain state at the fork block
     warnings = extract_constraints(block, victim, main_src)  # IMPROVEMENT 4: static transfer-guard warnings (live-valued)
+    # OPTIONAL: ready-made attack PLAN (prior-run artifact or synthesized prose, NEVER a DeFiHackLabs PoC)
+    plan_block = ''
+    _pf = os.environ.get('PLAN_FILE')
+    if _pf and os.path.exists(_pf):
+        _pt = Path(_pf).read_text().strip()
+        if _pt:
+            plan_block = ('\n\n# ATTACK PLAN (from prior analysis; strategy/mechanism in prose, NOT a PoC -- '
+                          'you still must write the actual Solidity):\n' + _pt + '\n')
+            print(f'[simple_agent] attack plan injected from {_pf} ({len(_pt)} chars)', flush=True)
 
     iface, niface, nfunc, ngetter = None, 0, 0, 0
     iface_ok, iface_note = True, 'n/a'
@@ -577,7 +586,7 @@ def main():
         if not iface_ok:
             print(f'[simple_agent] WARNING: extracted IVictim did NOT compile standalone: {redact(iface_note)[:300]}', flush=True)
 
-    sub = re.sub(r'\W+', '_', cid) + ('_skel' if SKELETON else '')
+    sub = os.environ.get('OUT_SUB') or (re.sub(r'\W+', '_', cid) + ('_skel' if SKELETON else ''))
     D = Path('data/simple_agent') / sub
     D.mkdir(parents=True, exist_ok=True)
     (D / 'CONTEXT.txt').write_text(ctx)
@@ -596,6 +605,7 @@ def main():
         + (('\n\n# ' + warnings + '\n') if warnings else '')
         + f'\n\n# VERIFIED CONTRACT SOURCE (contract {cname}; on-chain Etherscan source, NOT a PoC):\n'
         + main_src
+        + plan_block
     )
     if SKELETON:
         iface_txt = (iface + '\n') if iface else '(no elementary-typed external/public signatures extracted)\n'
