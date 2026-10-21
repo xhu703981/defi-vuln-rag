@@ -228,6 +228,11 @@ _CAP_KW  = re.compile(r'(?:_?max(?:Tx|Transaction|Sell|Buy|Wallet|Hold)\w*Amount
 _GATE_KW = re.compile(r'(?:trading(?:Enabled|Active|Open|Started|Live)?|swapEnabled|swapAndLiquifyEnabled|enableTrade|canTrade|tradeEnabled|tradeOpen|isLaunched|launched|liveTrading)', re.I)
 _BOT_KW  = re.compile(r'(?:isBot|_bot|bots|blacklist|blackList|_blocked|isBlacklisted|cooldown|antiBot|botBlock|mintLock)', re.I)
 _FEE_KW  = re.compile(r'(?:_?(?:tax|buy|sell|liquidity|marketing|dev|total|burn|reflection)Fee|_taxFee|feeRate|feePercent|feeNumerator)', re.I)
+# GENERALIZED per-tx-limit class (NOT the literal everyTimeBuyLimitAmount): any field that caps the
+# amount of tokens moved/delivered in a single buy/sell/transfer. Trigger for the sizing rule below.
+_PERTX_CAP = re.compile(r'(?:everyTime(?:Buy|Sell)Limit\w*|max(?:Tx|Txn|Transaction|Buy|Sell)\w*|_maxTxAmount)', re.I)
+# companion per-buy lock / cooldown / antibot fields that force a wait before re-moving the new balance.
+_LOCK_KW   = re.compile(r'(?:mintLock\w*|lockTxTime|\w*[Cc]ooldown|cooldown|antiBot|isBot|_bot)\w*', re.I)
 
 def _pubvar_types(src):
     """{name: elementary-solidity-type} for scalar public state vars (for live cast reads)."""
@@ -319,6 +324,33 @@ def extract_constraints(block, victim, src):
         add('- [fee-on-transfer] fee variables present (live): ' + ', '.join(fee) + '. Received amount may be less than sent; account for fees when sizing transfers/swaps.')
     elif re.search(r'\b_transfer\b', src) and re.search(_FEE_KW, src):
         add('- [fee-on-transfer] _transfer applies fee math (fee-like identifiers found in source). Received amount may be less than sent.')
+
+    # (F) GENERALIZED per-tx-cap SIZING RULE (the SATURN-diagnosis lever, made general & non-hardcoded).
+    # Fires for ANY field in the per-tx-limit class (not the literal everyTimeBuyLimitAmount). The cap
+    # binds the token amount DELIVERED per swap, so the model must size each leg from the OUTPUT and
+    # RECOMPUTE per leg against current live reserves. All values read live; no case constants baked in.
+    cap_hits = []
+    for name, t in sorted(pv.items()):
+        if _PERTX_CAP.search(name) and t.startswith('uint'):
+            v = live(name)
+            cap_hits.append((name, v))
+    if cap_hits:
+        lock_fields = sorted(set(m.group(0) for m in re.finditer(_LOCK_KW, src)))
+        cap_desc = ', '.join(f'{n}={v if v is not None else "?"} (live)' for n, v in cap_hits)
+        lk = ('  Companion per-buy lock/cooldown fields found in source: ' + ', '.join(lock_fields[:8]) + '.') if lock_fields else ''
+        add(
+            '- [PER-TX CAP -- CRITICAL SIZING RULE] This token enforces a per-transaction limit on the '
+            'AMOUNT OF TOKENS DELIVERED (the OUTPUT of a buy), NOT on the currency you put in: ' + cap_desc + '.' + lk + ' '
+            'A single large swap delivers more tokens than the cap and REVERTS (e.g. "Exchange Overflow" / '
+            'max-tx style; the DEX wraps it as Pancake: TRANSFER_FAILED). You CANNOT split a fixed total into '
+            'N EQUAL legs: reserves move after every buy, so equal legs overshoot on later legs and revert. '
+            'For EACH leg you MUST: (1) read the CURRENT live pair reserves and call getAmountsOut to back '
+            'out a currency input whose resulting OUTPUT stays below cap x 0.9 (the 0.9 safety factor leaves '
+            'fee-on-transfer headroom); (2) execute that one swap; (3) RECOMPUTE from scratch against the new '
+            'reserves for the next leg; accumulate the position across multiple buys. Each buy may LOCK the '
+            'newly received balance (mintLocks/lockTxTime/cooldown style): vm.warp past the lock/cooldown '
+            'window before selling or transferring, or the sell reverts (e.g. "Transfer amount locked").'
+        )
 
     if not lines:
         return ''
