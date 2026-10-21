@@ -91,6 +91,16 @@ LESSONS_K = int(os.environ.get('LESSONS_K', 6))
 # refused unexecuted until a real forge rerun is submitted. Turns reflect-spin into execution
 # feedback. 999 disables. The forced rerun counts into reruns_since_reflection (feeds RERUN_CAP).
 FORCE_RERUN_AFTER = int(os.environ.get('FORCE_RERUN_AFTER', 5))
+# RESUME_SEED (opt-in, default off): when on, one() loads the case's OWN prior-run accumulated
+# knowledge (its lessons.md dead-ends + last failing PoC try*.raw.sol) at the START of the run and
+# pre-populates the lessons ledger + a single synthetic transcript note, so the agent CONTINUES from
+# where it got stuck instead of re-deriving from zero. It only ever re-feeds the agent's OWN prior
+# output (no real-attack PoC/README/tx data, no per-case answers). Seed dir = RESUME_FROM if set,
+# else <outdir>+RESUME_FROM_SUFFIX (per-case snapshot), else the case's own live dir. Missing seed
+# files => silent fresh start. Normal (unset) runs are byte-identical to before.
+RESUME_SEED = os.environ.get('RESUME_SEED', '0') != '0'
+RESUME_FROM = (os.environ.get('RESUME_FROM') or '').strip()
+RESUME_FROM_SUFFIX = (os.environ.get('RESUME_FROM_SUFFIX') or '').strip()
 # REJECT_STALL: same-class pre-execution rejects (anti-cheat/inject) in a row before the loop injects
 # a top-salience STRUCTURAL directive (via strategy_note). Structural, not mechanism — never fires strategist.
 REJECT_STALL = int(os.environ.get('REJECT_STALL', 2))
@@ -448,6 +458,69 @@ def render_lessons_md(lessons):
     for v in lessons.values():
         L.append(f'- [x{v["count"]}] rounds {v["first_round"]}-{v["last_round"]}: {v["note"]}')
     return '\n'.join(L) + '\n'
+
+
+# ---- RESUME-SEED: continue a case from its OWN prior run's accumulated knowledge ----------
+# Parses a prior run dir (lessons.md + last try*.raw.sol) and returns (lessons OrderedDict,
+# synthetic transcript note). Only re-feeds the agent's OWN prior output; never real-attack data,
+# never per-case answers. Robust: any missing/unparseable file => returns ({}, '').
+def _parse_lessons_md(txt):
+    led = OrderedDict()
+    rx = re.compile(r'^- \[x(\d+)\] rounds (\d+)-(\d+): (.*)$')
+    for i, line in enumerate(txt.splitlines()):
+        m = rx.match(line.strip())
+        if not m:
+            continue
+        cnt, fr, lr, note = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4).strip()
+        led['seed:%d' % i] = {'note': note, 'count': cnt, 'first_round': fr, 'last_round': lr}
+    return led
+
+def load_resume_seed(seed_dir, refs_used):
+    """Return (lessons_OrderedDict, synthetic_note_str) from a prior run dir, or ({}, '')."""
+    try:
+        sd = Path(seed_dir)
+        if not sd.is_dir():
+            return OrderedDict(), ''
+        lessons = OrderedDict()
+        lp = sd / 'lessons.md'
+        if lp.exists():
+            lessons = _parse_lessons_md(lp.read_text())
+            # keep only the most-recent LESSONS_K distinct dead-ends
+            while len(lessons) > LESSONS_K:
+                lessons.popitem(last=False)
+        # locate the last failing PoC attempt (highest tryN.raw.sol)
+        tries = []
+        for f in sd.glob('try*.raw.sol'):
+            m = re.search(r'try(\d+)\.raw\.sol$', f.name)
+            if m:
+                tries.append((int(m.group(1)), f))
+        last_try_n, last_sol = None, ''
+        if tries:
+            last_try_n, lf = max(tries, key=lambda x: x[0])
+            last_sol = lf.read_text()[:6000]
+        # last failing reason: most recently-updated lesson note (best available in the dir)
+        last_reason = ''
+        if lessons:
+            last_reason = max(lessons.values(), key=lambda L: L['last_round'])['note']
+        if not lessons and not last_sol:
+            return OrderedDict(), ''
+        paradigm = ''
+        if refs_used and isinstance(refs_used, list) and refs_used and refs_used[0].get('paradigm'):
+            paradigm = refs_used[0]['paradigm']
+        parts = ['[RESUMING from a prior run on THIS case — continue, do not restart from zero.]']
+        if lessons:
+            dead = '; '.join('[x%d] %s' % (L['count'], L['note']) for L in lessons.values())
+            parts.append('Known dead-ends/lessons already hit (do NOT repeat these): ' + dead)
+        if last_reason:
+            parts.append('Last failing PoC (try%s) failed with: %s' % (last_try_n, last_reason))
+        if paradigm:
+            parts.append('The attack MECHANISM/paradigm is likely: ' + paradigm + '.')
+        parts.append('Build on the last PoC below toward a COMPILING, PASSING exploit; fix the next concrete blocker rather than re-deriving the mechanism.')
+        if last_sol:
+            parts.append('--- Last attempted PoC (try%s.raw.sol, trimmed) ---\n%s' % (last_try_n, last_sol))
+        return lessons, '\n'.join(parts)
+    except Exception as e:
+        return OrderedDict(), ''
 
 
 
@@ -822,6 +895,24 @@ def one(cid, victim, block, outdir, sources=None):
     last_reject_fp = None              # constant-scrubbed class of the last reject, to detect repeats
     deep_reflection_done = False       # RERUN_CAP gate: the one mandatory deep reflection has been spent
     lessons = OrderedDict()            # PART 2: fp -> {note,count,first_round,last_round}; disk mirror lessons.md
+
+    # ---- RESUME-SEED (opt-in via RESUME_SEED=1): continue from this case's OWN prior run ----
+    # Load the prior run's lessons + last failing PoC and pre-seed the ledger + ONE transcript note,
+    # so the agent builds on where it got stuck. Only the agent's own prior output is re-fed; never
+    # real-attack PoC/README/tx data, never per-case answers. Missing seed => silent fresh start.
+    if RESUME_SEED:
+        if RESUME_FROM:
+            _seed_dir = RESUME_FROM
+        elif RESUME_FROM_SUFFIX:
+            _seed_dir = str(outdir) + RESUME_FROM_SUFFIX
+        else:
+            _seed_dir = str(outdir)
+        _seed_lessons, _seed_note = load_resume_seed(_seed_dir, refs_used)
+        if _seed_lessons:
+            lessons = _seed_lessons
+            (D / 'lessons.md').write_text(render_lessons_md(lessons))
+        if _seed_note:
+            transcript.append('[resume-seed] ' + _seed_note)
 
     rnd = 0
     while rnd < budget:
