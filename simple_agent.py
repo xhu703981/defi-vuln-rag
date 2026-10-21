@@ -113,8 +113,10 @@ def _types(csv_params, with_loc):
     return out
 def extract_interface(src, name='IVictim'):
     """Light regex signature extraction over the verified source. Only external/public functions whose
-    params and returns are all elementary types are included (so IVictim always compiles)."""
-    sigs, seen = [], set()
+    params and returns are all elementary types are included, PLUS the implicit getters Solidity
+    generates for public state variables/constants/mappings (extract_getters). Keeps IVictim compilable."""
+    sigs, seen, names = [], set(), set()
+    nfunc = 0
     for m in re.finditer(r'function\s+(\w+)\s*\(([^)]*)\)([^{;]*)', src):
         fn, params, mods = m.group(1), m.group(2), m.group(3)
         if not re.search(r'\b(external|public)\b', mods):
@@ -135,11 +137,114 @@ def extract_interface(src, name='IVictim'):
         sig = f'function {fn}({", ".join(ptypes)}) external{mut}{rets};'
         if sig in seen:
             continue
-        seen.add(sig)
-        sigs.append(sig)
+        seen.add(sig); names.add(fn)
+        sigs.append(sig); nfunc += 1
+    ngetter = 0
+    for gname, gsig in extract_getters(src):
+        if gname in names or gsig in seen:
+            continue
+        seen.add(gsig); names.add(gname)
+        sigs.append(gsig); ngetter += 1
     if not sigs:
-        return None, 0
-    return f'interface {name} {{\n    ' + '\n    '.join(sigs) + '\n}', len(sigs)
+        return None, 0, 0
+    return f'interface {name} {{\n    ' + '\n    '.join(sigs) + '\n}', nfunc, ngetter
+
+# IMPROVEMENT 2 (getters): the prior skel run failed because the model kept calling members that are
+# PUBLIC STATE-VARIABLE auto-getters (everyTimeSellLimitAmount, mintPrice, DEFAULT_ADMIN_ROLE, ...),
+# which Solidity generates implicitly and which the function-only extractor above never emitted. Emit
+# them here: elementary/const/immutable vars -> x() ; arrays -> arr(uint256) ; (nested) mappings ->
+# m(K[,K2...]) . Skip anything whose key/value/element type is not elementary so IVictim still compiles.
+_PUB_RUN = r'(?:(?:public|private|internal|external|constant|immutable|override|virtual)\b\s*)+'
+def _parse_mapping(ts):
+    """mapping(K => V) (possibly nested) -> ([elementary key types], value_type_str) or None."""
+    ts = ts.strip()
+    if not ts.startswith('mapping'):
+        return None
+    op = ts.index('(')
+    cl = _match_paren(ts, op)
+    if cl < 0:
+        return None
+    inner = ts[op + 1:cl]
+    i = inner.find('=>')
+    if i < 0:
+        return None
+    key, val = inner[:i].strip(), inner[i + 2:].strip()
+    kt = _norm_type(key)
+    if kt is None:
+        return None
+    if val.startswith('mapping'):
+        sub = _parse_mapping(val)
+        if sub is None:
+            return None
+        return [kt] + sub[0], sub[1]
+    return [kt], val
+def extract_getters(src):
+    """Return [(name, signature)] for public state getters whose types are all elementary."""
+    out = []
+    # mappings: find each `mapping(...)` then the modifiers+name that follow
+    for m in re.finditer(r'\bmapping\s*\(', src):
+        op = src.index('(', m.start())
+        cl = _match_paren(src, op)
+        if cl < 0:
+            continue
+        type_str = src[m.start():cl + 1]
+        mm = re.match(r'\s*(' + _PUB_RUN + r')(\w+)\s*[=;]', src[cl + 1:cl + 1 + 240])
+        if not mm or 'public' not in mm.group(1):
+            continue
+        name = mm.group(2)
+        parsed = _parse_mapping(type_str)
+        if parsed is None:
+            continue
+        keys, val = parsed
+        if val.endswith(']') or val.startswith('mapping'):
+            continue
+        vt = _norm_type(val)
+        if vt is None:
+            continue
+        out.append((name, f'function {name}({",".join(keys)}) external view returns ({_loc(vt)});'))
+    # elementary & array public state vars / constants / immutables
+    for m in re.finditer(
+            r'\b(address payable|address|bool|string|bytes\d*|u?int\d*)((?:\[\d*\])*)\s+('
+            + _PUB_RUN + r')(\w+)\s*[=;]', src):
+        base, arr, mods, name = m.group(1), m.group(2), m.group(3), m.group(4)
+        if 'public' not in mods:
+            continue
+        ndim = arr.count('[')
+        if ndim == 0:
+            out.append((name, f'function {name}() external view returns ({_loc(base)});'))
+        elif ndim == 1:
+            out.append((name, f'function {name}(uint256) external view returns ({_loc(base)});'))
+        # multi-dim arrays: skip (ambiguous getter arity)
+    return out
+
+import shutil, subprocess, tempfile
+def _solar_bin():
+    p = shutil.which('solar')
+    if p:
+        return p
+    cand = os.path.expanduser('~/.foundry/bin/solar')
+    return cand if os.path.exists(cand) else None
+def iface_compiles(iface):
+    """Offline standalone compile check of the generated IVictim via solar (fast, no deps).
+    Returns (ok, note). If no checker is available, returns (True, 'unchecked')."""
+    if not iface:
+        return True, 'empty'
+    sb = _solar_bin()
+    if not sb:
+        return True, 'unchecked (no solar)'
+    try:
+        with tempfile.NamedTemporaryFile('w', suffix='.sol', delete=False) as fh:
+            fh.write('// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n' + iface + '\n')
+            path = fh.name
+        r = subprocess.run([sb, path], capture_output=True, text=True, timeout=30)
+        return r.returncode == 0, (r.stderr or r.stdout or '').strip()[:400]
+    except Exception as e:
+        return True, 'unchecked (' + str(e)[:60] + ')'
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
 
 # IMPROVEMENT 1: pin the whole scaffold (pragma/imports/Test inheritance/setUp/testExploit signature)
 # so the model can only write the attack body; scaffolding compile errors drop to ~0. What is pinned
@@ -180,6 +285,17 @@ def build_skeleton(victim, block, iface, body, extra):
         + '}' + extra_block + '\n'
     )
 
+def _match_paren(s, open_idx):
+    depth = 0
+    for j in range(open_idx, len(s)):
+        if s[j] == '(':
+            depth += 1
+        elif s[j] == ')':
+            depth -= 1
+            if depth == 0:
+                return j
+    return -1
+
 EXTRA_MARK = '//---EXTRA---'
 def _match_brace(s, open_idx):
     depth = 0
@@ -219,7 +335,10 @@ def parse_skel_output(out):
             return body, _extract_nontest_toplevel(s)
     if EXTRA_MARK in s:
         body, extra = s.split(EXTRA_MARK, 1)
-        return body.strip(), extra.strip()
+        # IMPROVEMENT: only inject helpers that parse into clean top-level contract/interface/
+        # library blocks; drop free functions / stray identifiers (prev run: 'Free functions
+        # cannot have visibility' / 'Expected identifier') rather than injecting broken Solidity.
+        return body.strip(), _extract_nontest_toplevel(extra)
     return s.strip(), ''
 
 SKEL_SYS = (
@@ -269,9 +388,14 @@ def main():
     main_src, full_src, cname = load_full_source(sources)   # verified Etherscan source, NOT the PoC
     ctx = vc.build_context(block, victim, main_src)          # live on-chain state at the fork block
 
-    iface, niface = (None, 0)
+    iface, niface, nfunc, ngetter = None, 0, 0, 0
+    iface_ok, iface_note = True, 'n/a'
     if SKELETON:
-        iface, niface = extract_interface(main_src)   # IMPROVEMENT 2: precise IVictim interface
+        iface, nfunc, ngetter = extract_interface(main_src)   # IMPROVEMENT 2: IVictim interface + getters
+        niface = nfunc + ngetter
+        iface_ok, iface_note = iface_compiles(iface)          # offline standalone compile check (solar)
+        if not iface_ok:
+            print(f'[simple_agent] WARNING: extracted IVictim did NOT compile standalone: {redact(iface_note)[:300]}', flush=True)
 
     sub = re.sub(r'\W+', '_', cid) + ('_skel' if SKELETON else '')
     D = Path('data/simple_agent') / sub
@@ -305,7 +429,7 @@ def main():
         )
 
     print(f'[simple_agent] case={cid} victim={victim} block={block} source={cname} '
-          f'model={MODEL} rounds={ROUNDS} skeleton={SKELETON} iface_sigs={niface}', flush=True)
+          f'model={MODEL} rounds={ROUNDS} skeleton={SKELETON} iface_sigs={niface} (fn={nfunc} getter={ngetter}) iface_compiles={iface_ok}', flush=True)
 
     transcript = []
     prev_sol, prev_err = None, None
@@ -388,7 +512,7 @@ def main():
     pt, ct, cost = est_cost()
     result = {
         'case': cid, 'victim': victim, 'block': block, 'model': MODEL, 'rounds_run': len(transcript),
-        'mode': 'skeleton' if SKELETON else 'plain', 'iface_sigs': niface,
+        'mode': 'skeleton' if SKELETON else 'plain', 'iface_sigs': niface, 'iface_fn': nfunc, 'iface_getter': ngetter, 'iface_compiles': iface_ok,
         'success_round': success_round, 'max_depth': max_depth, 'last_reason': last_reason,
         'prompt_tokens': pt, 'completion_tokens': ct, 'est_cost_usd': round(cost, 4),
         'per_round': transcript,
