@@ -30,7 +30,7 @@ def _chat(model, prefix, dynamic, temp):
                    {'type': 'text', 'text': dynamic}]
     else:
         content = (prefix or "") + dynamic
-    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': model, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '16384')), 'messages': [{'role': 'user', 'content': content}]})
+    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': model, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '32768')), 'messages': [{'role': 'user', 'content': content}]})
     return r['choices'][0]['message']['content'], r.get('usage')
 
 def gen_model(model, prompt, temp=0, prefix=None):  # OpenRouter chat for an explicit model id; disk-cached under data/llm/
@@ -46,7 +46,7 @@ def gen(prompt, temp=0):
     for m in (OLD, GEN):
         if os.path.exists(key(m)): return json.load(open(key(m)))['text']
     if os.environ.get('CACHE_ONLY'): raise RuntimeError('not cached (CACHE_ONLY)')
-    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': GEN, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '16384')), 'messages': [{'role': 'user', 'content': prompt}]})
+    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': GEN, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '32768')), 'messages': [{'role': 'user', 'content': prompt}]})
     text = r['choices'][0]['message']['content']; json.dump({'text': text, 'usage': r.get('usage')}, open(key(GEN), 'w')); return text
 
 def jev(state, questions):  # OpenRouter Jev decisions API, cached; returns answers dict
