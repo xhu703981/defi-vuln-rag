@@ -1,4 +1,7 @@
 # Single-agent, goal-driven exploit loop — modeled on Grok Build (github.com/xai-org/grok-build).
+# [HELPERS-ONLY / DEMOTED] Not an active entrypoint. minimal_agent.py is THE agent entrypoint.
+# Imported by minimal_agent/simple_agent for helpers (load_full_source, run_forge_verbose,
+# depth_of, pitfalls, RAG_K). Do not run directly as the pipeline.
 #
 # Grok Build's design we mirror here:
 #   * ONE agent, ONE continuous (non-truncated) context; it drives everything via ONE JSON

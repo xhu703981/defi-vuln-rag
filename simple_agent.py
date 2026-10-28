@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# [HELPERS-ONLY / DEMOTED] Not an active entrypoint. minimal_agent.py is THE agent entrypoint.
+# This module is imported by minimal_agent for its info-layer helpers (skeleton, interface,
+# constraints, DEX ref, est_cost). Do not run directly as the pipeline.
 """simple_agent.py — deliberately MINIMAL single-agent exploit-writing test.
 
 Question it answers: can ONE model (deepseek/deepseek-v3.2), given the SAME context the

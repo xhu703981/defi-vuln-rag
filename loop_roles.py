@@ -1,4 +1,6 @@
 # Grok Build-style role-split exploit loop: Planner -> (3-4 hypotheses) -> Coder per hypothesis
+# [HELPERS-ONLY / DEMOTED] Not an active entrypoint. minimal_agent.py is THE agent entrypoint.
+# Legacy role-split loop kept only as a library dependency. Do not run directly.
 # -> run_forge -> vote by confirm net-loss -> Reflector (-> replan), then after MAXR rounds a
 # FINAL DECISION model reviews all iterations and returns genuinely_cannot | should_continue.
 # Does NOT auto-start a second cycle (reports only).
