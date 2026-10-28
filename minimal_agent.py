@@ -49,6 +49,20 @@ MODEL = os.environ.get('MINIMAL_MODEL') or os.environ.get('SIMPLE_MODEL') or 'de
 USE_RAG = os.environ.get('USE_RAG', '1') != '0'
 TEMP  = float(os.environ.get('MINIMAL_TEMP', '0.15'))
 
+# Two GENERAL PoC-engineering pitfalls (no case hardcode) merged into layer 8.
+MINIMAL_PITFALLS = [
+    {'tag': 'via-ir-warp-loop', 'hint': 'Under via_ir, the Solidity optimizer caches block.timestamp '
+     'within a single tx, so vm.warp(block.timestamp + X) INSIDE a loop will NOT advance time as the '
+     'contract sees it (every iteration reads the same cached value). Warp ONCE to an absolute future '
+     'timestamp, or drive elapsed time with an explicit counter variable you compute yourself; never '
+     'rely on re-reading block.timestamp after a warp inside the same loop.'},
+    {'tag': 'per-address-mint-lock', 'hint': 'If mint (or a similar action) sets a PER-ADDRESS '
+     'cooldown/lock, you cannot re-mint from one address in a loop. Either mint once per FRESH EOA '
+     '(vm.deal + vm.prank with distinct addresses), or advance time PAST the absolute lock timestamp '
+     'exactly once (compute the absolute unlock time and vm.warp to it) before the next mint.'},
+]
+
+
 
 def build_rag_block(ctx, main_src, cid):
     """Layer 9: vectorless RAG paradigm hints (excludes the query case). Returns (hints_text, refs_used)."""
@@ -99,7 +113,7 @@ def main():
     if not iface_ok:
         print(f'[minimal] WARNING: extracted IVictim did NOT compile standalone: {redact(iface_note)[:300]}', flush=True)
     rag_hints, refs_used = build_rag_block(ctx, main_src, cid)      # layer 9
-    pit_block = render_pitfalls_block(_load_pitfalls())             # layer 8
+    pit_block = render_pitfalls_block(_load_pitfalls() + MINIMAL_PITFALLS)  # layer 8 (+2 general minimal pitfalls)
     iface_txt = (iface + '\n') if iface else '(no elementary-typed external/public signatures extracted)\n'
 
     out = Path('data/minimal_agent') / re.sub(r'\W+', '_', cid)
@@ -153,8 +167,10 @@ def main():
     plan = (call(MODEL, plan_prompt, 'plan') or '').strip()
     (out / 'plan.md').write_text(plan)
 
-    # ===== STEP 4: WRITE CODE (one LLM call — fill attack body into pinned skeleton) =====
-    write_prompt = (
+    # ===== STEP 4+5: WRITE -> VERIFY, up to MAX_ROUNDS rounds (retry feeds last code + error) =====
+    MAX_ROUNDS = int(os.environ.get('MINIMAL_ROUNDS', '3'))
+
+    base_write_prompt = (
         sa.SKEL_SYS + '\n\n' + ctx_pack
         + '\n\n# ATTACK PLAN (your own prior analysis; follow this mechanism — strategy/prose, NOT a '
           'PoC; you now write the actual Solidity body):\n' + plan + '\n'
@@ -163,44 +179,77 @@ def main():
           'ROUTER/WBNB/FACTORY constants + IVictim) is FIXED. Write ONLY the testExploit() body '
           '(+ optional //---EXTRA--- helper defs).'
     )
-    raw = call(MODEL, write_prompt, 'write')
-    body, extra = sa.parse_skel_output(raw)
-    (out / 'round1.body.txt').write_text(body + ('\n//---EXTRA---\n' + extra if extra else ''))
 
     outcome, reason, depth, max_depth = 'no-code', None, None, -1
-    if not body.strip():
-        outcome, reason = 'empty-body', 'model returned empty attack body'
-        print('[verify] empty body returned — nothing to verify', flush=True)
-        sol = None
-    else:
-        sol = sa.build_skeleton(victim, block, iface, body, extra)
-        (out / 'round1.sol').write_text(sol)
-        # ===== STEP 5: VERIFY ONCE (same confirm path; NO retry) =====
-        sol2, ierr = inject_confirm(sol, victim)
-        if ierr:
-            outcome, reason, depth = 'inject-reject', f'inject reject: {ierr}', 0
-            print(f'[verify] inject rejected: {redact(str(ierr))[:160]}', flush=True)
+    rounds = []          # per-round outcomes for result.json
+    prev_body = prev_extra = None   # last round's attack code, fed back on retry
+    prev_reason = None              # last round's forge/confirm reason (error), fed back on retry
+
+    for rnd in range(1, MAX_ROUNDS + 1):
+        if rnd == 1:
+            write_prompt = base_write_prompt
         else:
-            (out / 'round1.injected.sol').write_text(sol2)
-            write_proj(out, sol2)
-            t1 = time.time()
-            ok, fo = run_forge_verbose(out)
-            forge_dt = time.time() - t1
-            reason = parse_reason(ok, fo)
-            depth = depth_of(ok, reason, fo)
-            if depth is not None:
-                max_depth = max(max_depth, depth)
-            outcome = 'VERIFIED' if ok else 'fail'
-            if ok:
-                (out / 'SUCCESS.sol').write_text(sol2)
-            print(f'[verify] ok={ok} depth={depth} reason={redact(str(reason))[:160]} forge={forge_dt:.0f}s', flush=True)
-    if depth is not None:
-        max_depth = max(max_depth, depth)
+            # Retry: feed the PREVIOUS round's attack body/code + the forge/confirm reason (error).
+            prev_code = (prev_body or '') + ('\n//---EXTRA---\n' + prev_extra if prev_extra else '')
+            write_prompt = (
+                base_write_prompt
+                + '\n\n# PREVIOUS ATTEMPT (round %d) — your last testExploit() body FAILED verification. '
+                  'Diagnose from the error below and REWRITE the full body (same scaffold rules). Do NOT '
+                  'repeat the same mistake; keep the plan mechanism.\n' % (rnd - 1)
+                + '\n## PREVIOUS ATTACK CODE:\n' + prev_code + '\n'
+                + '\n## VERIFICATION ERROR (forge/confirm reason for that code):\n'
+                + redact(str(prev_reason)) + '\n'
+            )
+
+        raw = call(MODEL, write_prompt, f'write.r{rnd}')
+        body, extra = sa.parse_skel_output(raw)
+        (out / f'round{rnd}.body.txt').write_text(body + ('\n//---EXTRA---\n' + extra if extra else ''))
+        prev_body, prev_extra = body, extra
+
+        r_outcome, r_reason, r_depth = 'no-code', None, None
+        if not body.strip():
+            r_outcome, r_reason = 'empty-body', 'model returned empty attack body'
+            print(f'[verify.r{rnd}] empty body returned — nothing to verify', flush=True)
+        else:
+            sol = sa.build_skeleton(victim, block, iface, body, extra)
+            (out / f'round{rnd}.sol').write_text(sol)
+            sol2, ierr = inject_confirm(sol, victim)
+            if ierr:
+                r_outcome, r_reason, r_depth = 'inject-reject', f'inject reject: {ierr}', 0
+                print(f'[verify.r{rnd}] inject rejected: {redact(str(ierr))[:160]}', flush=True)
+            else:
+                (out / f'round{rnd}.injected.sol').write_text(sol2)
+                write_proj(out, sol2)
+                t1 = time.time()
+                ok, fo = run_forge_verbose(out)
+                forge_dt = time.time() - t1
+                r_reason = parse_reason(ok, fo)
+                r_depth = depth_of(ok, r_reason, fo)
+                r_outcome = 'VERIFIED' if ok else 'fail'
+                if ok:
+                    (out / 'SUCCESS.sol').write_text(sol2)
+                print(f'[verify.r{rnd}] ok={ok} depth={r_depth} reason={redact(str(r_reason))[:160]} forge={forge_dt:.0f}s', flush=True)
+
+        if r_depth is not None:
+            max_depth = max(max_depth, r_depth)
+        outcome, reason, depth = r_outcome, r_reason, r_depth
+        prev_reason = r_reason
+        rounds.append({'round': rnd, 'outcome': r_outcome, 'depth': r_depth,
+                       'reason': redact(str(r_reason)) if r_reason is not None else None})
+        transcript.append({'step': f'verify.r{rnd}', 'outcome': r_outcome, 'depth': r_depth,
+                           'reason': redact(str(r_reason)) if r_reason is not None else None})
+
+        if r_outcome == 'VERIFIED':
+            print(f'[minimal] verified on round {rnd} — stopping.', flush=True)
+            break
+        if rnd < MAX_ROUNDS:
+            print(f'[minimal] round {rnd} failed — retrying with prior code + error.', flush=True)
 
     pt, ct, cost = sa.est_cost()
     result = {
         'case': cid, 'victim': victim, 'block': block, 'model': MODEL,
-        'pipeline': 'read-source -> read-context -> plan -> write -> verify-once (NO retry)',
+        'pipeline': 'read-source -> read-context -> plan -> (write -> verify) x up-to-3 (retry feeds last code + error)',
+        'max_rounds': MAX_ROUNDS, 'rounds_run': len(rounds), 'rounds': rounds,
         'use_rag': USE_RAG, 'rag_refs': refs_used,
         'iface_sigs': niface, 'iface_fn': nfunc, 'iface_getter': ngetter, 'iface_compiles': iface_ok,
         'outcome': outcome, 'verified': outcome == 'VERIFIED', 'max_depth': max_depth,
