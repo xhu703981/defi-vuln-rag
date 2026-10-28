@@ -144,7 +144,10 @@ def main():
 
     transcript = []
 
-    def call(model, prompt, label):
+    def call(model, prompt, label, soft=False):
+        # IncompleteRead / connection drops are absorbed by llm.post()'s backoff retries. If the call
+        # STILL fails after those retries, a soft caller (a write round) gets None and the round fails,
+        # so the case continues to the next round instead of aborting on one transient error.
         t0 = time.time()
         try:
             text = llm.gen_model(model, prompt, temp=TEMP)
@@ -152,6 +155,10 @@ def main():
             msg = redact(str(e))
             if '402' in msg:
                 print(f'[{label}] HTTP 402 payment required — STOPPING.', flush=True); raise SystemExit(3)
+            if soft:
+                print(f'[{label}] model error after retries: {msg[:200]} — failing this round.', flush=True)
+                transcript.append({'step': label, 'error': msg[:200]})
+                return None
             print(f'[{label}] model error: {msg[:200]} — STOPPING.', flush=True); raise SystemExit(4)
         dt = time.time() - t0
         transcript.append({'step': label, 'gen_s': round(dt, 1), 'chars': len(text or '')})
@@ -201,8 +208,8 @@ def main():
                 + redact(str(prev_reason)) + '\n'
             )
 
-        raw = call(MODEL, write_prompt, f'write.r{rnd}')
-        body, extra = sa.parse_skel_output(raw)
+        raw = call(MODEL, write_prompt, f'write.r{rnd}', soft=True)
+        body, extra = sa.parse_skel_output(raw or '')
         (out / f'round{rnd}.body.txt').write_text(body + ('\n//---EXTRA---\n' + extra if extra else ''))
         prev_body, prev_extra = body, extra
 

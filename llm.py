@@ -1,7 +1,10 @@
 # Generation: OpenRouter chat (DeepSeek V3.2); old Gemini cache entries are reused read-only. Jev decisions. Disk caches, keys never printed.
-import json, os, time, hashlib, urllib.request, urllib.error
+import json, os, time, hashlib, urllib.request, urllib.error, http.client
 GEN, OLD, CACHE = 'deepseek/deepseek-v3.2', 'gemini-2.5-flash', 'data/llm'
 os.makedirs(CACHE, exist_ok=True)
+# Transient network failures treated like a timeout: backoff + retry.
+RETRYABLE = (http.client.IncompleteRead, http.client.RemoteDisconnected,
+             ConnectionResetError, BrokenPipeError, ConnectionError, TimeoutError)
 def post(url, body):
     for i in range(6):
         try:
@@ -10,7 +13,12 @@ def post(url, body):
         except urllib.error.HTTPError as e:
             if e.code in (400, 401, 402, 403, 404): raise
             time.sleep(2 ** i)
-        except (urllib.error.URLError, TimeoutError): time.sleep(2 ** i)
+        except urllib.error.URLError as e:
+            # URLError often wraps IncompleteRead / BrokenPipe / ConnectionReset — retry those too.
+            if isinstance(getattr(e, 'reason', None), RETRYABLE) or isinstance(e, RETRYABLE):
+                time.sleep(2 ** i); continue
+            time.sleep(2 ** i)
+        except RETRYABLE: time.sleep(2 ** i)
     raise RuntimeError('openrouter failed')
 def _chat(model, prefix, dynamic, temp):
     """One OpenRouter chat call. When a static `prefix` is given and the model is an Anthropic model,
@@ -22,7 +30,7 @@ def _chat(model, prefix, dynamic, temp):
                    {'type': 'text', 'text': dynamic}]
     else:
         content = (prefix or "") + dynamic
-    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': model, 'temperature': temp, 'messages': [{'role': 'user', 'content': content}]})
+    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': model, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '16384')), 'messages': [{'role': 'user', 'content': content}]})
     return r['choices'][0]['message']['content'], r.get('usage')
 
 def gen_model(model, prompt, temp=0, prefix=None):  # OpenRouter chat for an explicit model id; disk-cached under data/llm/
@@ -38,7 +46,7 @@ def gen(prompt, temp=0):
     for m in (OLD, GEN):
         if os.path.exists(key(m)): return json.load(open(key(m)))['text']
     if os.environ.get('CACHE_ONLY'): raise RuntimeError('not cached (CACHE_ONLY)')
-    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': GEN, 'temperature': temp, 'messages': [{'role': 'user', 'content': prompt}]})
+    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': GEN, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '16384')), 'messages': [{'role': 'user', 'content': prompt}]})
     text = r['choices'][0]['message']['content']; json.dump({'text': text, 'usage': r.get('usage')}, open(key(GEN), 'w')); return text
 
 def jev(state, questions):  # OpenRouter Jev decisions API, cached; returns answers dict
