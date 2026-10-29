@@ -45,7 +45,17 @@ import verify_ctx as vc
 # REUSE every info-layer helper from simple_agent (importing it also wires llm._chat cost tracking).
 import simple_agent as sa
 
-MODEL = os.environ.get('MINIMAL_MODEL') or os.environ.get('SIMPLE_MODEL') or 'deepseek/deepseek-v4.1-flash'
+# TWO ROLES (split pipeline):
+#  * PLAN_MODEL  reasons/plans — keeps the long-chain-of-thought flash model, reasoning allowed (medium/high).
+#  * WRITE_MODEL writes/retries code — a strong coder that emits clean Solidity; reasoning effort 'none'
+#    so its content budget goes to code, not prose. Defaults to deepseek/deepseek-v3.2 (the model already
+#    used successfully as this repo's writer / GEN default, cheap + clean code). Set MINIMAL_WRITE_MODEL=
+#    anthropic/claude-sonnet-4.5 for a stronger (pricier) coder.
+PLAN_MODEL  = os.environ.get('MINIMAL_PLAN_MODEL') or os.environ.get('MINIMAL_MODEL') or os.environ.get('SIMPLE_MODEL') or 'deepseek/deepseek-v4.1-flash'
+WRITE_MODEL = os.environ.get('MINIMAL_WRITE_MODEL') or 'deepseek/deepseek-v3.2'
+PLAN_EFFORT  = os.environ.get('MINIMAL_PLAN_REASONING_EFFORT', 'medium').strip().lower()   # reason: medium/high
+WRITE_EFFORT = os.environ.get('MINIMAL_WRITE_REASONING_EFFORT', 'none').strip().lower()    # write: none/minimal
+MODEL = PLAN_MODEL  # back-comapt alias for result.json / logging
 USE_RAG = os.environ.get('USE_RAG', '1') != '0'
 TEMP  = float(os.environ.get('MINIMAL_TEMP', '0.15'))
 
@@ -141,16 +151,17 @@ def main():
     print(f'[minimal] case={cid} victim={victim} block={block} source={cname} model={MODEL} '
           f'iface_sigs={niface} (fn={nfunc} getter={ngetter}) iface_compiles={iface_ok} '
           f'rag_refs={len(refs_used)} rag={USE_RAG}', flush=True)
+    print(f'[minimal] ROLES: plan={PLAN_MODEL} (effort={PLAN_EFFORT}) | write={WRITE_MODEL} (effort={WRITE_EFFORT})', flush=True)
 
     transcript = []
 
-    def call(model, prompt, label, soft=False):
+    def call(model, prompt, label, soft=False, effort=None):
         # IncompleteRead / connection drops are absorbed by llm.post()'s backoff retries. If the call
         # STILL fails after those retries, a soft caller (a write round) gets None and the round fails,
         # so the case continues to the next round instead of aborting on one transient error.
         t0 = time.time()
         try:
-            text = llm.gen_model(model, prompt, temp=TEMP)
+            text = llm.gen_model(model, prompt, temp=TEMP, reasoning_effort=effort)
         except Exception as e:
             msg = redact(str(e))
             if '402' in msg:
@@ -171,7 +182,10 @@ def main():
         + '\n\n# NOW: write the ATTACK PLAN in prose (mechanism + ordered steps + constraints). '
           'No Solidity, no code fences.'
     )
-    plan = (call(MODEL, plan_prompt, 'plan') or '').strip()
+    plan = (call(PLAN_MODEL, plan_prompt, 'plan', effort=PLAN_EFFORT) or '').strip()
+    if not plan:
+        print('[plan] empty plan — retrying once.', flush=True)
+        plan = (call(PLAN_MODEL, plan_prompt, 'plan.retry', effort=PLAN_EFFORT) or '').strip()
     (out / 'plan.md').write_text(plan)
 
     # ===== STEP 4+5: WRITE -> VERIFY, up to MAX_ROUNDS rounds (retry feeds last code + error) =====
@@ -185,6 +199,13 @@ def main():
         + '\n# The scaffold (pragma/imports/Test/setUp fork+deal/testExploit + IPancakeRouter/IWBNB and '
           'ROUTER/WBNB/FACTORY constants + IVictim) is FIXED. Write ONLY the testExploit() body '
           '(+ optional //---EXTRA--- helper defs).'
+        + '\n\n# OUTPUT CONTRACT (STRICT — you are the CODER role, reasoning is OFF):\n'
+          '- Output Solidity CODE ONLY: the testExploit() body statements (and, after a `//---EXTRA---` line, '
+          'any helper contract/interface/library defs). NOTHING ELSE.\n'
+          '- NO prose, NO explanation, NO analysis, NO headings, NO comments narrating your reasoning before/after '
+          'the code. Do not restate the plan. If you must annotate, use short inline `//` comments only.\n'
+          '- You MAY wrap the whole answer in a single ```solidity ... ``` fence; do not emit any text outside it.\n'
+          '- Start your answer with the first Solidity statement of the body.'
     )
 
     outcome, reason, depth, max_depth = 'no-code', None, None, -1
@@ -208,7 +229,7 @@ def main():
                 + redact(str(prev_reason)) + '\n'
             )
 
-        raw = call(MODEL, write_prompt, f'write.r{rnd}', soft=True)
+        raw = call(WRITE_MODEL, write_prompt, f'write.r{rnd}', soft=True, effort=WRITE_EFFORT)
         body, extra = sa.parse_skel_output(raw or '')
         (out / f'round{rnd}.body.txt').write_text(body + ('\n//---EXTRA---\n' + extra if extra else ''))
         prev_body, prev_extra = body, extra
@@ -255,6 +276,8 @@ def main():
     pt, ct, cost = sa.est_cost()
     result = {
         'case': cid, 'victim': victim, 'block': block, 'model': MODEL,
+        'plan_model': PLAN_MODEL, 'write_model': WRITE_MODEL,
+        'plan_reasoning_effort': PLAN_EFFORT, 'write_reasoning_effort': WRITE_EFFORT,
         'pipeline': 'read-source -> read-context -> plan -> (write -> verify) x up-to-3 (retry feeds last code + error)',
         'max_rounds': MAX_ROUNDS, 'rounds_run': len(rounds), 'rounds': rounds,
         'use_rag': USE_RAG, 'rag_refs': refs_used,

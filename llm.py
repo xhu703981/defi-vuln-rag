@@ -2,6 +2,7 @@
 import json, os, time, hashlib, urllib.request, urllib.error, http.client
 GEN, OLD, CACHE = 'deepseek/deepseek-v3.2', 'gemini-2.5-flash', 'data/llm'
 os.makedirs(CACHE, exist_ok=True)
+_EFFORT_OVERRIDE = None  # set transiently by gen_model(reasoning_effort=...) for per-call effort; None -> use env
 def _reasoning():
     """OpenRouter `reasoning` config, env-tunable. deepseek-v4.1-flash's long chain-of-thought
     was eating the whole max_tokens budget and truncating the Solidity body. This model exposes
@@ -19,7 +20,8 @@ def _reasoning():
       LLM_REASONING_EFFORT: none|low|medium|high|max|default   (default: medium)
       LLM_REASONING_MAX_TOKENS: int                             (best-effort budget; passed if set)
     Returns {} to omit the param entirely (effort=default)."""
-    eff = os.environ.get('LLM_REASONING_EFFORT', 'medium').strip().lower()
+    eff = (_EFFORT_OVERRIDE if _EFFORT_OVERRIDE is not None
+           else os.environ.get('LLM_REASONING_EFFORT', 'medium')).strip().lower()
     cfg = {}
     if eff and eff != 'default':
         cfg['effort'] = eff
@@ -59,13 +61,21 @@ def _chat(model, prefix, dynamic, temp):
     r = post('https://openrouter.ai/api/v1/chat/completions', {'model': model, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '32768')), 'messages': [{'role': 'user', 'content': content}], **_reasoning()})
     return r['choices'][0]['message']['content'], r.get('usage')
 
-def gen_model(model, prompt, temp=0, prefix=None):  # OpenRouter chat for an explicit model id; disk-cached under data/llm/
+def gen_model(model, prompt, temp=0, prefix=None, reasoning_effort=None):  # OpenRouter chat for an explicit model id; disk-cached under data/llm/
+    # reasoning_effort (none|low|medium|high|max) overrides LLM_REASONING_EFFORT for THIS call only — lets the
+    # plan (reasoning) and write (code) roles use different effort. Folded into the disk cache key.
     # Disk key hashes the FULL logical prompt (prefix+prompt) so keys match the pre-caching single-string form.
+    global _EFFORT_OVERRIDE
     full = (prefix or "") + prompt
-    key = f'{CACHE}/{hashlib.sha1((model + full + (f"|t{temp}" if temp else "")).encode()).hexdigest()}.json'
+    eff_tag = f'|r{reasoning_effort}' if reasoning_effort else ''
+    key = f'{CACHE}/{hashlib.sha1((model + full + (f"|t{temp}" if temp else "") + eff_tag).encode()).hexdigest()}.json'
     if os.path.exists(key): return json.load(open(key))['text']
     if os.environ.get('CACHE_ONLY'): raise RuntimeError('not cached (CACHE_ONLY)')
-    text, usage = _chat(model, prefix, prompt, temp)
+    _prev = _EFFORT_OVERRIDE; _EFFORT_OVERRIDE = reasoning_effort if reasoning_effort else _prev
+    try:
+        text, usage = _chat(model, prefix, prompt, temp)
+    finally:
+        _EFFORT_OVERRIDE = _prev
     json.dump({'text': text, 'usage': usage, 'model': model}, open(key, 'w')); return text
 def gen(prompt, temp=0):
     key = lambda m: f'{CACHE}/{hashlib.sha1((m + prompt + (f"|t{temp}" if temp else "")).encode()).hexdigest()}.json'
