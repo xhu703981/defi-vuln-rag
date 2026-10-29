@@ -4,14 +4,22 @@ GEN, OLD, CACHE = 'deepseek/deepseek-v3.2', 'gemini-2.5-flash', 'data/llm'
 os.makedirs(CACHE, exist_ok=True)
 def _reasoning():
     """OpenRouter `reasoning` config, env-tunable. deepseek-v4.1-flash's long chain-of-thought
-    was eating the whole max_tokens budget and truncating the Solidity body (finish_reason=length,
-    empty/short content). This model exposes efforts max/high/low/none; probes show effort "none"
-    yields reasoning_tokens=0 and the full body, "low" is unreliable (consumed the full budget),
-    and max_tokens is NOT a hard cap (maps to effort). So the primary knob is effort, default none.
-      LLM_REASONING_EFFORT: none|low|high|max|default   (default: none)
-      LLM_REASONING_MAX_TOKENS: int                      (best-effort budget; passed if set)
+    was eating the whole max_tokens budget and truncating the Solidity body. This model exposes
+    efforts max/high/medium/low/none. Probe (deepseek/deepseek-v4.1-flash, 32768 max_tokens, a
+    ~120-line Solidity write prompt), reasoning_tokens / completion / content_len / finish:
+      effort=high    8327 / 10400 / 8292 / stop
+      effort=medium  6459 /  7886 / 5707 / stop   <- DEFAULT: some reasoning, ~22%% < high, full body
+      effort=low     6730 /  8332 / 6406 / stop
+      effort=none       0 /  2316 / 9474 / stop   (zero reasoning; user wants nonzero)
+      max_tokens=512/1024/2048/4096: 6889/6731/5226/6350 reasoning (NOT a hard cap -> maps to effort,
+                                     so reasoning.max_tokens is an unreliable knob here)
+    So the primary knob is effort. Default "medium" keeps a bit of reasoning (nonzero, clearly below
+    high) while still writing a complete body; reasoning.max_tokens is honored if explicitly set but
+    is best-effort only. Keep LLM_MAX_TOKENS high (32768) so ~6.5k reasoning leaves ample room.
+      LLM_REASONING_EFFORT: none|low|medium|high|max|default   (default: medium)
+      LLM_REASONING_MAX_TOKENS: int                             (best-effort budget; passed if set)
     Returns {} to omit the param entirely (effort=default)."""
-    eff = os.environ.get('LLM_REASONING_EFFORT', 'none').strip().lower()
+    eff = os.environ.get('LLM_REASONING_EFFORT', 'medium').strip().lower()
     cfg = {}
     if eff and eff != 'default':
         cfg['effort'] = eff
