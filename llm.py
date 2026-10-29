@@ -2,6 +2,24 @@
 import json, os, time, hashlib, urllib.request, urllib.error, http.client
 GEN, OLD, CACHE = 'deepseek/deepseek-v3.2', 'gemini-2.5-flash', 'data/llm'
 os.makedirs(CACHE, exist_ok=True)
+def _reasoning():
+    """OpenRouter `reasoning` config, env-tunable. deepseek-v4.1-flash's long chain-of-thought
+    was eating the whole max_tokens budget and truncating the Solidity body (finish_reason=length,
+    empty/short content). This model exposes efforts max/high/low/none; probes show effort "none"
+    yields reasoning_tokens=0 and the full body, "low" is unreliable (consumed the full budget),
+    and max_tokens is NOT a hard cap (maps to effort). So the primary knob is effort, default none.
+      LLM_REASONING_EFFORT: none|low|high|max|default   (default: none)
+      LLM_REASONING_MAX_TOKENS: int                      (best-effort budget; passed if set)
+    Returns {} to omit the param entirely (effort=default)."""
+    eff = os.environ.get('LLM_REASONING_EFFORT', 'none').strip().lower()
+    cfg = {}
+    if eff and eff != 'default':
+        cfg['effort'] = eff
+    mt = os.environ.get('LLM_REASONING_MAX_TOKENS', '').strip()
+    if mt:
+        cfg.pop('effort', None)          # effort and max_tokens are mutually exclusive
+        cfg['max_tokens'] = int(mt)
+    return {'reasoning': cfg} if cfg else {}
 # Transient network failures treated like a timeout: backoff + retry.
 RETRYABLE = (http.client.IncompleteRead, http.client.RemoteDisconnected,
              ConnectionResetError, BrokenPipeError, ConnectionError, TimeoutError)
@@ -30,7 +48,7 @@ def _chat(model, prefix, dynamic, temp):
                    {'type': 'text', 'text': dynamic}]
     else:
         content = (prefix or "") + dynamic
-    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': model, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '32768')), 'messages': [{'role': 'user', 'content': content}]})
+    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': model, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '32768')), 'messages': [{'role': 'user', 'content': content}], **_reasoning()})
     return r['choices'][0]['message']['content'], r.get('usage')
 
 def gen_model(model, prompt, temp=0, prefix=None):  # OpenRouter chat for an explicit model id; disk-cached under data/llm/
@@ -46,7 +64,7 @@ def gen(prompt, temp=0):
     for m in (OLD, GEN):
         if os.path.exists(key(m)): return json.load(open(key(m)))['text']
     if os.environ.get('CACHE_ONLY'): raise RuntimeError('not cached (CACHE_ONLY)')
-    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': GEN, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '32768')), 'messages': [{'role': 'user', 'content': prompt}]})
+    r = post('https://openrouter.ai/api/v1/chat/completions', {'model': GEN, 'temperature': temp, 'max_tokens': int(os.environ.get('LLM_MAX_TOKENS', '32768')), 'messages': [{'role': 'user', 'content': prompt}], **_reasoning()})
     text = r['choices'][0]['message']['content']; json.dump({'text': text, 'usage': r.get('usage')}, open(key(GEN), 'w')); return text
 
 def jev(state, questions):  # OpenRouter Jev decisions API, cached; returns answers dict
